@@ -53,10 +53,17 @@ class PyState(gdb.Command):
 
     def complete(self, text, word):
         return gdb.COMPLETE_NONE
+    
+    @classmethod
+    def _get_code_state(cls, frame):
+        try:
+            return frame.read_var("code_state")
+        except ValueError:
+            return cls._get_code_state(frame.older())
 
     def invoke(self, args, from_tty):
         frame = gdb.selected_frame()
-        code_state = frame.read_var("code_state");
+        code_state = self.get_code_state(frame)
         n_state = int(code_state["n_state"])
         state = code_state["state"];
         for i in range(n_state):
