@@ -1,116 +1,153 @@
-try:
-    gdb
-except NameError:
-    import sys
+import logging, sys, os, importlib
+logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler(sys.stdout)])
+log = logging.getLogger("gdb.micropython")
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
     sys.path.append('/usr/share/gdb/python/')
     import gdb
 
-import struct
-debugging = gdb.lookup_symbol("debugging")[0]
+try:
+    if TYPE_CHECKING:
+        import mpy_tool
+    else:
+        if "mpy-tool" not in sys.modules:
+            mpy_tools_folder = os.path.normpath(os.path.join(gdb.current_objfile().filename, "..", "..", "..", "..", "tools"))
+            log.info("Importing mpy-tool from %s.", mpy_tools_folder)
 
+            sys.modules["makeqstrdata"]={}
+            sys.path.append(mpy_tools_folder)
+            mpy_tool = importlib.import_module("mpy-tool")
+        mpy_tool = sys.modules["mpy-tool"]
+    log.info("Imported mpy-tool.")
+    has_mpy_tool = True
+except ImportError:
+    log.warning("Cannot import mpy-tool. Disassembly will be unavailable.")
+    has_mpy_tool = False
 
-class ContinueLater:
+class MPy(gdb.Command):
+    """Examine MicroPython interpreter state."""
     def __init__(self):
-        pass
-
-    def __call__(self):
-        gdb.execute("continue")
-
-resolved = None
-
-def stopHandler(event):
-    global resolved, handlers
-    if resolved is None:
-        resolved = {}
-        for handler in handlers:
-            resolved[int(gdb.parse_and_eval("&" + handler))] = handlers[handler]
-    pc = int(gdb.parse_and_eval("$pc"))
-    if pc in resolved:
-        resolved[pc]()
-        gdb.post_event(ContinueLater())
+        super(MPy, self).__init__("mpy", gdb.COMMAND_USER, gdb.COMPLETE_COMMAND, True)
+        log.info("Registered group: mpy")
+MPy()
 
 
-gdb.events.stop.connect(stopHandler)
-
-
-def get_qstr(qstr):
+def get_qstr(qstr: int) -> str:
     last_pool = gdb.lookup_symbol("mp_state_ctx")[0].value()["vm"]["last_pool"]
     while(qstr < int(last_pool["total_prev_len"])):
         last_pool = last_pool["prev"]
     return last_pool["qstrs"][qstr - int(last_pool["total_prev_len"])].string()
 
-
 class Qstr(gdb.Command):
+    """Decode a uniQueSTR value.
+    Usage: mpy qstr VALUE
+    """
     def __init__(self):
-        super(Qstr, self).__init__("qstr", gdb.COMMAND_USER)
-
-    def complete(self, text, word):
-        return gdb.COMPLETE_NONE
-
+        super(Qstr, self).__init__("mpy qstr", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
+        log.info("Registered command: mpy qstr")
+    
     def invoke(self, args, from_tty):
         print(get_qstr(int(args)))
 Qstr()
 
+
+def get_pystate(frame):
+    try:
+        return frame.read_var("code_state")
+    except ValueError:
+        return get_pystate(frame.older())
+    except AttributeError:
+        return None
+        
 class PyState(gdb.Command):
+    """Show the MicroPython stack.
+    Usage: mpy state
+    """
     def __init__(self):
-        super(PyState, self).__init__("pystate", gdb.COMMAND_USER)
-
-    def complete(self, text, word):
-        return gdb.COMPLETE_NONE
+        super(PyState, self).__init__("mpy state", gdb.COMMAND_STACK, gdb.COMPLETE_NONE)
+        log.info("Registered command: mpy state")
     
-    @classmethod
-    def _get_code_state(cls, frame):
-        try:
-            return frame.read_var("code_state")
-        except ValueError:
-            return cls._get_code_state(frame.older())
-
     def invoke(self, args, from_tty):
         frame = gdb.selected_frame()
-        code_state = self.get_code_state(frame)
+        code_state = get_pystate(frame)
         n_state = int(code_state["n_state"])
-        state = code_state["state"];
+        state = code_state["state"]
         for i in range(n_state):
-            print(pyObj(state[i]))
+            print(get_pyobj(state[i]))
 PyState()
 
+
+def get_pyobj(value):
+    if int(value) & 1:
+        return str(int(value) >> 1)
+    if (int(value) & 7) == 2:
+        return "'" + get_qstr(int(value) >> 3) + "'"
+    if int(value) == 0:
+        return "None"
+    objtype = value.cast(mp_base_obj)["type"]
+    if int(objtype) == int(mp_type_dict):
+        dic = value.cast(mp_obj_dict)
+        vals = int(dic["map"]["alloc"])
+        strs = ""
+        for i in range(vals):
+            entry = dic["map"]["table"][i]
+            strs += get_pyobj(entry["key"]) + ": " + get_pyobj(entry["value"]) + ",\n "
+        return "dict: {" + strs + "}"
+    if int(objtype) == int(mp_type_module) and False:
+        print("module")
+        dic = value.cast(mp_obj_module)
+        print(dic)
+        return "module(" + get_pyobj(dic["globals"]) + ")"
+    obj = str(objtype).split(" ")
+    if len(obj) == 1:
+        obj = obj[0]
+    else:
+        obj = obj[1]
+    return "object(" + hex(value) + ") " + obj
+
 class PyObj(gdb.Command):
+    """Pretty-print a MicroPython object.
+    Usage: mpy obj VALUE
+    """
     def __init__(self):
-        super(PyObj, self).__init__("pyobj", gdb.COMMAND_USER)
+        super(PyObj, self).__init__("mpy obj", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
+        log.info("Registered command: mpy obj")
 
     def complete(self, text, word):
         return gdb.COMPLETE_NONE
 
     def invoke(self, args, from_tty):
-        print(pyObj(gdb.parse_and_eval(args)))
+        print(get_pyobj(gdb.parse_and_eval(args)))
 PyObj()
 
-class PyDis(gdb.Command):
-    def __init__(self):
-        super(PyDis, self).__init__("pydis", gdb.COMMAND_USER)
 
-    def complete(self, text, word):
-        return gdb.COMPLETE_NONE
+def get_pydis(bc):
+    sig = MPY_BC_Sig()
+    sig.load(bc, 0)
+    sig.print()
+    mpy_disassemble(bc, sig.end, None)
+
+class PyDis(gdb.Command):
+    """Dissasemble MicroPython bytecode.
+    Usage: mpy dis VALUE
+    """
+    def __init__(self):
+        super(PyDis, self).__init__("mpy dis", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
+        log.info("Registered command: mpy dis")
 
     def invoke(self, args, from_tty):
         value = gdb.parse_and_eval(args)
         objtype = value.cast(mp_base_obj)["type"]
         if int(objtype) == int(mp_type_fun_bc):
-            pyDis(value.cast(mp_obj_fun_bc))
-PyDis()
+            get_pydis(value.cast(mp_obj_fun_bc))
 
-def get_tool():
-    import sys, importlib
-    if "mpy-tool" not in sys.modules:
-        sys.modules["makeqstrdata"]={}
-        #sys.path.append("/path/to/micropython/tools")
-        importlib.import_module("mpy-tool")
-    return sys.modules["mpy-tool"]
+if has_mpy_tool:
+    PyDis()
 
 
-def mpy_disassemble_tool(fun_bc, ptr, current_ptr):
-    tool = get_tool()
-    Opcode = tool.Opcode
+def mpy_disassemble(fun_bc, ptr, current_ptr):
+    Opcode = mpy_tool.Opcode
 
     bc = fun_bc["bytecode"]
     qstr_table = fun_bc["context"]["constants"]["qstr_table"]
@@ -123,15 +160,15 @@ def mpy_disassemble_tool(fun_bc, ptr, current_ptr):
     while True:
         offsets.append(ptr)
         op = int(bc[ip])
-        fmt, sz, arg, _ = tool.mp_opcode_decode(bc, ip)
+        fmt, sz, arg, _ = mpy_tool.mp_opcode_decode(bc, ip)
         if (bc[ip] & 0xf0) == Opcode.MP_BC_BASE_JUMP_E:
             biggest_jump = max(biggest_jump, ip + arg)
         if bc[ip] == Opcode.MP_BC_LOAD_CONST_OBJ:
-            arg = pyObj(obj_table[arg])
+            arg = get_pyobj(obj_table[arg])
             pass
-        if fmt == tool.MP_BC_FORMAT_QSTR:
+        if fmt == mpy_tool.MP_BC_FORMAT_QSTR:
             arg = get_qstr(int(qstr_table[arg]))
-        elif fmt in (tool.MP_BC_FORMAT_VAR_UINT, tool.MP_BC_FORMAT_OFFSET):
+        elif fmt in (mpy_tool.MP_BC_FORMAT_VAR_UINT, mpy_tool.MP_BC_FORMAT_OFFSET):
             pass
         else:
             arg = ""
@@ -179,38 +216,37 @@ class MPY_BC_Sig:
     def __init__(self):
         pass
 
-    def load_tool(self, fun_bc, ip):
-        tool = get_tool()
+    def load(self, fun_bc, ip):
         bytecode = fun_bc["bytecode"]
         qstr_table = fun_bc["context"]["constants"]["qstr_table"]
-        sig = tool.extract_prelude(bytecode, ip)
+        sig = mpy_tool.extract_prelude(bytecode, ip)
         (self.S, self.E, self.F, self.A, self.K, self.D) = sig[5]
         (self.I, self.C) = sig[6]
         self.end = sig[4]
         self.lines = []
         print(qstr_table[0])
-        self.function_name = get_qstr(int(qstr_table[sig[7][0]]))
+        self.function_name = Qstr.get_qstr(int(qstr_table[sig[7][0]]))
         self.args = [get_qstr(qstr_table[int(i)]) for i in sig[7][1:]]
         self.source = get_qstr(qstr_table[0])
             
         #now 1 qstr function name
         #now A + K strings, args
-        source_line = 1;
+        source_line = 1
         ptr = sig[2]
         while ptr < sig[3]:
-            c = int(bytecode[ptr]);
+            c = int(bytecode[ptr])
             b = 0
             l = 0
             if (c & 0x80) == 0:
                 # 0b0LLBBBBB encoding
-                b = c & 0x1f;
-                l = c >> 5;
-                ptr += 1;
+                b = c & 0x1f
+                l = c >> 5
+                ptr += 1
             else:
                 # 0b1LLLBBBB 0bLLLLLLLL encoding (l's LSB in second byte)
-                b = c & 0xf;
-                l = ((c << 4) & 0x700) | int(bytecode[ptr + 1]);
-                ptr += 2;
+                b = c & 0xf
+                l = ((c << 4) & 0x700) | int(bytecode[ptr + 1])
+                ptr += 2
             self.lines.append((l,b))
 
     def set_val(self, S, E, F, A, K, D, C, I):
@@ -244,39 +280,6 @@ mp_obj_fun_bc = gdb.lookup_type("mp_obj_fun_bc_t").pointer()
 mp_type_fun_bc = gdb.lookup_symbol("mp_type_fun_bc")[0].value().address
 
 
-def pyDis(bc):
-    sig = MPY_BC_Sig();
-    sig.load_tool(bc, 0)
-    sig.print()
-    mpy_disassemble_tool(bc, sig.end, None)
-
-def pyObj(value):
-    if int(value) & 1:
-        return str(int(value) >> 1)
-    if (int(value) & 7) == 2:
-        return "'" + get_qstr(int(value) >> 3) + "'"
-    if int(value) == 0:
-        return "None"
-    objtype = value.cast(mp_base_obj)["type"]
-    if int(objtype) == int(mp_type_dict):
-        dic = value.cast(mp_obj_dict)
-        vals = int(dic["map"]["alloc"])
-        strs = ""
-        for i in range(vals):
-            entry = dic["map"]["table"][i]
-            strs += pyObj(entry["key"]) + ": " + pyObj(entry["value"]) + ",\n "
-        return "dict: {" + strs + "}"
-    if int(objtype) == int(mp_type_module) and False:
-        print("module")
-        dic = value.cast(mp_obj_module)
-        print(dic)
-        return "module(" + pyObj(dic["globals"]) + ")"
-    obj = str(objtype).split(" ")
-    if len(obj) == 1:
-        obj = obj[0]
-    else:
-        obj = obj[1]
-    return "object(" + hex(value) + ") " + obj
     
 class InlinedFrameDecorator(gdb.FrameDecorator.FrameDecorator):
 
@@ -284,8 +287,8 @@ class InlinedFrameDecorator(gdb.FrameDecorator.FrameDecorator):
         super(InlinedFrameDecorator, self).__init__(fobj)
         self.elided_frames = []
         frame = self.inferior_frame()
-        self.sig = MPY_BC_Sig();
-        self.sig.load_tool(frame.read_var("code_state")["fun_bc"], 0)
+        self.sig = MPY_BC_Sig()
+        self.sig.load(frame.read_var("code_state")["fun_bc"], 0)
 
     def function(self):
         frame = self.inferior_frame()
@@ -295,7 +298,7 @@ class InlinedFrameDecorator(gdb.FrameDecorator.FrameDecorator):
         if len(self.sig.args) != 0:
             name += "("
             for arg in self.sig.args:
-                name += arg + "=" + str(pyObj(state[self.sig.S - 1 - narg])) + ","
+                name += arg + "=" + str(get_pyobj(state[self.sig.S - 1 - narg])) + ","
                 narg += 1
             name = name[:-1]+")"
         return name
@@ -334,18 +337,21 @@ def decorate(frames):
         pass
     
 class FrameFilter():
-
     def __init__(self):
-
-        self.name = "Foo"
+        self.name = "mpy_frame"
         self.priority = 100
         self.enabled = True
 
         # Register this frame filter with the global frame_filters
         # dictionary.
         gdb.frame_filters[self.name] = self
+        
+        log.info("Registered frame filter: %s", self.name)
 
     def filter(self, frame_iter):
         return iter(decorate(frame_iter))
+    
+if has_mpy_tool:
+    FrameFilter()
 
-FrameFilter()
+log.info("Loaded MicroPython GDB Plugin")
