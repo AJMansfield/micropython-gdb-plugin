@@ -1,5 +1,9 @@
-# ./openocd -s tcl -f interface/picoprobe.cfg -f target/rp2040.cfg
-# gdb-multiarch -ex "target extended-remote :3333" -ex "source gdb-plugin.py" ./firmware.elf
+try:
+    gdb
+except NameError:
+    import sys
+    sys.path.append('/usr/share/gdb/python/')
+    import gdb
 
 import struct
 debugging = gdb.lookup_symbol("debugging")[0]
