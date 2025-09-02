@@ -658,16 +658,17 @@ def get_ptr_area(mem_state, ptr, aligned=True) -> tuple[int,Any]:
         return None
 
 def get_previous_head(area, block):
+    orig_block = block
     while block >= 0:
         kind = ATB.lookup(area, block)
         if kind == ATB.FREE:
-            return None
+            return orig_block
         elif kind == ATB.TAIL:
             block -= 1
         else: #if kind in {ATB.HEAD, ATB.MARK}:
             return block
     else:
-        return None
+        return orig_block
     
 def enumerate_ptrs_in_block(mem_state, area, block):
     for i in range(WORDS_PER_BLOCK):
@@ -720,10 +721,10 @@ def print_heap_graph(print):
 
     mem_state = gdb.lookup_symbol("mp_state_ctx")[0].value()["mem"]
 
-    try:
-        dot_graph.add_node(heap_stats_node(mem_state))
-    except gdb.error:
-        pass
+    # try:
+    #     dot_graph.add_node(heap_stats_node(mem_state))
+    # except gdb.error:
+    #     pass
 
     for area_num, area in enumerate(all_heap_areas(mem_state)):
 
@@ -737,9 +738,9 @@ def print_heap_graph(print):
             ptr = ptr_from_block(area, block)
             kind = ATB.lookup(area, block)
 
-            if kind in {ATB.FREE, ATB.MARK, ATB.TAIL}: # chain ends, write out current
+            if kind in {ATB.HEAD, ATB.MARK, ATB.FREE}: # chain ends, write out current and clear
                 if head_ptr is not None:
-                    head_block = block_from_ptr(area, ptr)
+                    head_block = block_from_ptr(area, head_ptr)
                     head_kind = ATB.lookup(area, head_block)
                     head_final = FTB.lookup(area, head_block)
                     
@@ -753,32 +754,33 @@ def print_heap_graph(print):
 
                     node = pydot.Node(
                         get_node_name(head_ptr),
-                        label=repr("|".join(node_lines)),
+                        label='"' + "|".join(node_lines) + '"',
                         shape="record", style=style, fillcolor=fillcolor,
                         sortv=int(head_ptr),
                     )
                     dot_graph.add_node(node)
+                head_ptr = None
+                node_lines = None
             
-            if kind in {ATB.HEAD, ATB.MARK, ATB.TAIL}: # start or add to chain
+            if kind in {ATB.HEAD, ATB.MARK, ATB.TAIL}: # add to chain
+                anchor = get_block_anchor(area_num, block)
                 if head_ptr is None:
                     head_ptr = ptr
                     node_lines = []
-                
-                anchor = get_block_anchor(area_num, block)
-                if kind == ATB.TAIL:
-                    line = anchor
-                else:
                     name = get_node_name(ptr)
                     obj = get_heap_type(ptr)
                     if obj:
-                        line = f"{anchor}{name}\n{obj}"
+                        line = f"{anchor}{name}\\n{obj}"
                     else:
                         line = f"{anchor}{name}"
+                else:
+                    line = anchor
                 node_lines.append(line)
 
+                # add all pointers in the block
                 for i, src_ptr, dst_ptr in enumerate_ptrs_in_block(mem_state, area, block):
-                    # src_name = get_pointer_edge_ref(mem_state, src_ptr)
-                    src_name = f"{int(head_ptr):#08x}:a{area_num}.b{block}"
+                    src_name = get_pointer_edge_ref(mem_state, src_ptr)
+                    # src_name = f"{int(head_ptr):#08x}:a{area_num}.b{block}"
                     dst_name = get_pointer_edge_ref(mem_state, dst_ptr)
                     dot_graph.add_edge(pydot.Edge(src_name, dst_name))
 
