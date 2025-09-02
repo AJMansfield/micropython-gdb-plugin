@@ -1,4 +1,5 @@
-import logging, sys, os, importlib
+from __future__ import annotations
+import logging, sys, os, importlib, enum, functools
 logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler(sys.stdout)])
 log = logging.getLogger("gdb.micropython")
 
@@ -25,12 +26,20 @@ except ImportError:
     log.warning("Cannot import mpy-tool. Disassembly will be unavailable.")
     has_mpy_tool = False
 
-class MPy(gdb.Command):
+try:
+    import pydot
+    has_pydot = True
+except ImportError:
+    log.warning("Cannot import pydot. Heap graph output will be unavailable.")
+    has_pydot = False
+
+
+class Mpy(gdb.Command):
     """Examine MicroPython interpreter state."""
     def __init__(self):
-        super(MPy, self).__init__("mpy", gdb.COMMAND_USER, gdb.COMPLETE_COMMAND, True)
+        super(Mpy, self).__init__("mpy", gdb.COMMAND_USER, gdb.COMPLETE_COMMAND, True)
         log.info("Registered group: mpy")
-MPy()
+Mpy()
 
 
 def get_qstr(qstr: int) -> str:
@@ -39,17 +48,17 @@ def get_qstr(qstr: int) -> str:
         last_pool = last_pool["prev"]
     return last_pool["qstrs"][qstr - int(last_pool["total_prev_len"])].string()
 
-class Qstr(gdb.Command):
+class MpyQstr(gdb.Command):
     """Decode a uniQueSTR value.
     Usage: mpy qstr VALUE
     """
     def __init__(self):
-        super(Qstr, self).__init__("mpy qstr", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
+        super(MpyQstr, self).__init__("mpy qstr", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
         log.info("Registered command: mpy qstr")
     
     def invoke(self, args, from_tty):
         print(get_qstr(int(args)))
-Qstr()
+MpyQstr()
 
 
 def get_pystate(frame):
@@ -60,12 +69,12 @@ def get_pystate(frame):
     except AttributeError:
         return None
         
-class PyState(gdb.Command):
+class MpyState(gdb.Command):
     """Show the MicroPython stack.
     Usage: mpy state
     """
     def __init__(self):
-        super(PyState, self).__init__("mpy state", gdb.COMMAND_STACK, gdb.COMPLETE_NONE)
+        super(MpyState, self).__init__("mpy state", gdb.COMMAND_STACK, gdb.COMPLETE_NONE)
         log.info("Registered command: mpy state")
     
     def invoke(self, args, from_tty):
@@ -74,31 +83,31 @@ class PyState(gdb.Command):
         n_state = int(code_state["n_state"])
         state = code_state["state"]
         for i in range(n_state):
-            print(get_pyobj(state[i]))
-PyState()
+            print(get_pyobj_str(state[i]))
+MpyState()
 
 
-def get_pyobj(value):
+def get_pyobj_str(value) -> str:
     if int(value) & 1:
         return str(int(value) >> 1)
     if (int(value) & 7) == 2:
         return "'" + get_qstr(int(value) >> 3) + "'"
     if int(value) == 0:
         return "None"
-    objtype = value.cast(mp_base_obj)["type"]
-    if int(objtype) == int(mp_type_dict):
-        dic = value.cast(mp_obj_dict)
+    objtype = value.cast(mptypes.mp_obj_base)["type"]
+    if int(objtype) == int(mptypes.mp_type_dict):
+        dic = value.cast(mptypes.mp_obj_dict)
         vals = int(dic["map"]["alloc"])
         strs = ""
         for i in range(vals):
             entry = dic["map"]["table"][i]
-            strs += get_pyobj(entry["key"]) + ": " + get_pyobj(entry["value"]) + ",\n "
+            strs += get_pyobj_str(entry["key"]) + ": " + get_pyobj_str(entry["value"]) + ",\n "
         return "dict: {" + strs + "}"
-    if int(objtype) == int(mp_type_module) and False:
+    if int(objtype) == int(mptypes.mp_type_module) and False:
         print("module")
-        dic = value.cast(mp_obj_module)
+        dic = value.cast(mptypes.mp_obj_module)
         print(dic)
-        return "module(" + get_pyobj(dic["globals"]) + ")"
+        return "module(" + get_pyobj_str(dic["globals"]) + ")"
     obj = str(objtype).split(" ")
     if len(obj) == 1:
         obj = obj[0]
@@ -106,20 +115,20 @@ def get_pyobj(value):
         obj = obj[1]
     return "object(" + hex(value) + ") " + obj
 
-class PyObj(gdb.Command):
+class MpyObj(gdb.Command):
     """Pretty-print a MicroPython object.
     Usage: mpy obj VALUE
     """
     def __init__(self):
-        super(PyObj, self).__init__("mpy obj", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
+        super(MpyObj, self).__init__("mpy obj", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
         log.info("Registered command: mpy obj")
 
     def complete(self, text, word):
         return gdb.COMPLETE_NONE
 
     def invoke(self, args, from_tty):
-        print(get_pyobj(gdb.parse_and_eval(args)))
-PyObj()
+        print(get_pyobj_str(gdb.parse_and_eval(args)))
+MpyObj()
 
 
 def get_pydis(bc):
@@ -128,22 +137,22 @@ def get_pydis(bc):
     sig.print()
     mpy_disassemble(bc, sig.end, None)
 
-class PyDis(gdb.Command):
+class MpyDis(gdb.Command):
     """Dissasemble MicroPython bytecode.
     Usage: mpy dis VALUE
     """
     def __init__(self):
-        super(PyDis, self).__init__("mpy dis", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
+        super(MpyDis, self).__init__("mpy dis", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
         log.info("Registered command: mpy dis")
 
     def invoke(self, args, from_tty):
         value = gdb.parse_and_eval(args)
-        objtype = value.cast(mp_base_obj)["type"]
-        if int(objtype) == int(mp_type_fun_bc):
-            get_pydis(value.cast(mp_obj_fun_bc))
+        objtype = value.cast(mptypes.mp_obj_base)["type"]
+        if int(objtype) == int(mptypes.mp_type_fun_bc):
+            get_pydis(value.cast(mptypes.mp_obj_fun_bc))
 
 if has_mpy_tool:
-    PyDis()
+    MpyDis()
 
 
 def mpy_disassemble(fun_bc, ptr, current_ptr):
@@ -164,7 +173,7 @@ def mpy_disassemble(fun_bc, ptr, current_ptr):
         if (bc[ip] & 0xf0) == Opcode.MP_BC_BASE_JUMP_E:
             biggest_jump = max(biggest_jump, ip + arg)
         if bc[ip] == Opcode.MP_BC_LOAD_CONST_OBJ:
-            arg = get_pyobj(obj_table[arg])
+            arg = get_pyobj_str(obj_table[arg])
             pass
         if fmt == mpy_tool.MP_BC_FORMAT_QSTR:
             arg = get_qstr(int(qstr_table[arg]))
@@ -225,7 +234,7 @@ class MPY_BC_Sig:
         self.end = sig[4]
         self.lines = []
         print(qstr_table[0])
-        self.function_name = Qstr.get_qstr(int(qstr_table[sig[7][0]]))
+        self.function_name = MpyQstr.get_qstr(int(qstr_table[sig[7][0]]))
         self.args = [get_qstr(qstr_table[int(i)]) for i in sig[7][1:]]
         self.source = get_qstr(qstr_table[0])
             
@@ -271,16 +280,199 @@ class MPY_BC_Sig:
     def print(self):
         print("state: " + str(self.S) + ", exc: " + str(self.E) + ", scope: " + str(self.F) + ", pos_args: " + str(self.A) + ", kwonly_args: " + str(self.K) + ", def_args: " + str(self.D) + ", info: " + str(self.I) + ", cells: " + str(self.C))
 
-mp_base_obj = gdb.lookup_type("mp_obj_base_t").pointer()
-mp_obj_dict = gdb.lookup_type("mp_obj_dict_t").pointer()
-mp_type_dict = gdb.lookup_symbol("mp_type_dict")[0].value().address
-mp_obj_module = gdb.lookup_type("mp_obj_module_t").pointer()
-mp_type_module = gdb.lookup_symbol("mp_type_module")[0].value().address
-mp_obj_fun_bc = gdb.lookup_type("mp_obj_fun_bc_t").pointer()
-mp_type_fun_bc = gdb.lookup_symbol("mp_type_fun_bc")[0].value().address
+class MpTypes:
+    CONSTANT_TYPES = set([
+        # From obj.h
+        "mp_type_type",
+        "mp_type_object",
+        "mp_type_NoneType",
+        "mp_type_bool",
+        "mp_type_int",
+        "mp_type_str",
+        "mp_type_bytes",
+        "mp_type_bytearray",
+        "mp_type_memoryview",
+        "mp_type_float",
+        "mp_type_complex",
+        "mp_type_tuple",
+        "mp_type_list",
+        "mp_type_map",
+        "mp_type_enumerate",
+        "mp_type_filter",
+        "mp_type_deque",
+        "mp_type_dict",
+        "mp_type_ordereddict",
+        "mp_type_range",
+        "mp_type_set",
+        "mp_type_frozenset",
+        "mp_type_slice",
+        "mp_type_zip",
+        "mp_type_array",
+        "mp_type_super",
+        "mp_type_gen_wrap",
+        "mp_type_native_gen_wrap",
+        "mp_type_gen_instance",
+        "mp_type_fun_builtin_0",
+        "mp_type_fun_builtin_1",
+        "mp_type_fun_builtin_2",
+        "mp_type_fun_builtin_3",
+        "mp_type_fun_builtin_var",
+        "mp_type_fun_bc",
+        "mp_type_fun_native",
+        "mp_type_fun_viper",
+        "mp_type_fun_asm",
+        "mp_type_code",
+        "mp_type_module",
+        "mp_type_staticmethod",
+        "mp_type_classmethod",
+        "mp_type_bound_meth",
+        "mp_type_property",
+        "mp_type_stringio",
+        "mp_type_bytesio",
+        "mp_type_ringio",
+        "mp_type_reversed",
+        "mp_type_polymorph_iter",
+        "mp_type_polymorph_iter_with_finaliser",
+        "mp_type_BaseException",
+        "mp_type_ArithmeticError",
+        "mp_type_AssertionError",
+        "mp_type_AttributeError",
+        "mp_type_EOFError",
+        "mp_type_Exception",
+        "mp_type_GeneratorExit",
+        "mp_type_ImportError",
+        "mp_type_IndentationError",
+        "mp_type_IndexError",
+        "mp_type_KeyboardInterrupt",
+        "mp_type_KeyError",
+        "mp_type_LookupError",
+        "mp_type_MemoryError",
+        "mp_type_NameError",
+        "mp_type_NotImplementedError",
+        "mp_type_OSError",
+        "mp_type_OverflowError",
+        "mp_type_RuntimeError",
+        "mp_type_StopAsyncIteration",
+        "mp_type_StopIteration",
+        "mp_type_SyntaxError",
+        "mp_type_SystemExit",
+        "mp_type_TypeError",
+        "mp_type_UnicodeError",
+        "mp_type_ValueError",
+        "mp_type_ViperTypeError",
+        "mp_type_ZeroDivisionError",
 
+        # from whole-codebase search for MP_DEFINE_CONST_OBJ_TYPE
+        "mp_type_usb_device_builtin_default",
+        "mp_type_usb_device_builtin_none",
+        "mp_type_bluetooth_uuid",
+        "mp_type_bluetooth_ble",
+        "mp_type_framebuf",
+        "mp_type_poll",
+        "mp_type_vfs_fat_fileio",
+        "mp_type_vfs_fat_textio",
+        "mp_type_vfs_posix_fileio",
+        "mp_type_vfs_posix_textio",
+        "mp_type_vfs_posix",
+        "mp_type_vfs_rom_fileio",
+        "mp_type_vfs_rom_textio",
+        "mp_type_vfs_rom",
+        "mp_type_stest_fileio",
+        "mp_type_stest_textio2",
+        "mp_type_socket",
+        "mp_type_jsproxy_gen",
+        "mp_type_jsproxy",
+        "mp_type_undefined",
+        "mp_type_iobase",
+        "mp_type_bufwriter",
+        "mp_type_thread_lock",
+        "mp_type_array",
+        "mp_type_bytearray",
+        "mp_type_memoryview",
+        "mp_type_array_it",
+        "mp_type_attrtuple",
+        "mp_type_bound_meth",
+        "mp_type_closure",
+        "mp_type_code",
+        "mp_type_code",
+        "mp_type_complex",
+        "mp_type_deque",
+        "mp_type_dict_view_it",
+        "mp_type_dict_view",
+        "mp_type_dict",
+        "mp_type_ordereddict",
+        "mp_type_enumerate",
+        "mp_type_BaseException",
+        "mp_type_filter",
+        "mp_type_float",
+        "mp_type_fun_builtin_0",
+        "mp_type_fun_builtin_1",
+        "mp_type_fun_builtin_2",
+        "mp_type_fun_builtin_3",
+        "mp_type_fun_builtin_var",
+        "mp_type_fun_bc",
+        "mp_type_fun_native",
+        "mp_type_fun_viper",
+        "mp_type_fun_asm",
+        "mp_type_gen_wrap",
+        "mp_type_native_gen_wrap",
+        "mp_type_gen_instance",
+        "mp_type_it",
+        "mp_type_int",
+        "mp_type_list",
+        "mp_type_map",
+        "mp_type_module",
+        "mp_type_NoneType",
+        "mp_type_object",
+        "mp_type_polymorph_iter",
+        "mp_type_polymorph_iter_with_finaliser",
+        "mp_type_property",
+        "mp_type_range_it",
+        "mp_type_range",
+        "mp_type_reversed",
+        "mp_type_ringio",
+        "mp_type_set",
+        "mp_type_frozenset",
+        "mp_type_singleton",
+        "mp_type_slice",
+        "mp_type_str",
+        "mp_type_bytes",
+        "mp_type_stringio",
+        "mp_type_bytesio",
+        "mp_type_str",
+        "mp_type_tuple",
+        "mp_type_type",
+        "mp_type_super",
+        "mp_type_staticmethod",
+        "mp_type_classmethod",
+        "mp_type_zip",
+        "mp_type_frame",
+        "mp_type_checked_fun",
+    ])
 
+    @functools.cache
+    def lookup(self, name):
+        if name.startswith("mp_type_"):
+            return gdb.lookup_symbol(name)[0].value().address
+        elif name.startswith("mp_obj_"):
+            return gdb.lookup_type(f"{name}_t").pointer()
+        else:
+            raise LookupError
+
+    def __getitem__(self, key:str):
+        try:
+            return self.lookup(key)
+        except (AttributeError, LookupError, gdb.error):
+            raise KeyError(f"Can't find MpType {key}")
     
+    def __getattr__(self, name:str):
+        try:
+            return self.lookup(name)
+        except (AttributeError, LookupError, gdb.error):
+            raise AttributeError(f"Can't find MpType {name}", name=name, obj=self)
+        
+mptypes = MpTypes()
+
 class InlinedFrameDecorator(gdb.FrameDecorator.FrameDecorator):
 
     def __init__(self, fobj):
@@ -298,7 +490,7 @@ class InlinedFrameDecorator(gdb.FrameDecorator.FrameDecorator):
         if len(self.sig.args) != 0:
             name += "("
             for arg in self.sig.args:
-                name += arg + "=" + str(get_pyobj(state[self.sig.S - 1 - narg])) + ","
+                name += arg + "=" + str(get_pyobj_str(state[self.sig.S - 1 - narg])) + ","
                 narg += 1
             name = name[:-1]+")"
         return name
@@ -353,5 +545,264 @@ class FrameFilter():
     
 if has_mpy_tool:
     FrameFilter()
+
+
+# class MpyMem(gdb.Command):
+#     """Examine MicroPython heap memory state."""
+#     def __init__(self):
+#         super(Mpy, self).__init__("mpy mem", gdb.COMMAND_USER, gdb.COMPLETE_COMMAND, True)
+#         log.info("Registered group: mpy mem")
+# MpyMem()
+
+class MpyGcDumpInfo(gdb.Command):
+    """Dump the garbage collector's statistics.
+    Usage: mpy mem dump_info
+    """
+    def __init__(self):
+        super(MpyGcDumpInfo, self).__init__("mpy gc_dump_info", gdb.COMMAND_DATA, gdb.COMPLETE_NONE)
+        log.info("Registered command: mpy gc_dump_info")
+
+    def invoke(self, args, from_tty):
+        print(gdb.execute("call gc_dump_info(&mp_plat_print)", False, True))
+        # return gdb.execute("call gc_dump_info(&mp_sys_stdout_print)", False, True)
+MpyGcDumpInfo()
+    
+class MpyGcDumpAllocTable(gdb.Command):
+    """Dump the garbage collector's allocation table.
+    Usage: mpy mem dump_alloc_table
+    """
+    def __init__(self):
+        super(MpyGcDumpAllocTable, self).__init__("mpy gc_dump_alloc_table", gdb.COMMAND_DATA, gdb.COMPLETE_NONE)
+        log.info("Registered command: mpy gc_dump_alloc_table")
+
+    def invoke(self, args, from_tty):
+        print(gdb.execute("call gc_dump_alloc_table(&mp_plat_print)", False, True))
+        # return gdb.execute("call gc_dump_alloc_table(&mp_sys_stdout_print)", False, True)
+MpyGcDumpAllocTable()
+
+
+def all_heap_areas(mem_state):
+    heap_area = mem_state["area"]
+    while heap_area:
+        yield heap_area
+        try:
+            heap_area = heap_area["next"]
+        except gdb.error:
+            return
+        
+class BlockTable:
+    def __init_subclass__(cls, blocks_per_byte:int=4, table_name:str="gc_alloc_table_start"):
+        cls.blocks_per_byte = blocks_per_byte
+        cls.bits_per_block = 8 // cls.blocks_per_byte
+        cls.block_mask = ~(-1 << cls.bits_per_block)
+        cls.table_name = table_name
+    @classmethod
+    def lookup(cls, area, block:int):
+        index, shift = divmod(block, cls.blocks_per_byte)
+        shift *= cls.bits_per_block
+        mask = cls.block_mask
+        return int(area[cls.table_name][index]) >> shift & mask
+
+class ATB(BlockTable, enum.IntEnum, blocks_per_byte=4, table_name="gc_alloc_table_start"):
+    FREE = 0
+    HEAD = 1
+    TAIL = 2
+    MARK = 3
+
+class FTB(BlockTable, enum.IntEnum, blocks_per_byte=8, table_name="gc_finaliser_table_start"):
+    CLEAR = 0
+    SET = 1
+
+
+# ATB_BLOCKS_PER_BYTE = 4
+# ATB_BITS_PER_BLOCK = 8 // ATB_BLOCKS_PER_BYTE
+# ATB_BLOCK_MASK = (1<<ATB_BITS_PER_BLOCK) - 1
+# def atb_coordinates(block:int) -> tuple[int,int,int]:
+#     index, shift = divmod(block, ATB_BLOCKS_PER_BYTE)
+#     shift *= ATB_BITS_PER_BLOCK
+#     return index, shift, ATB_BLOCK_MASK
+# def atb_get(area, block:int) -> ATB:
+#     index, shift, mask = atb_coordinates(block)
+#     numeric_kind = int(area["gc_alloc_table_start"][index]) >> shift & mask
+#     return ATB(numeric_kind)
+
+# FTB_BLOCKS_PER_BYTE = 8
+# FTB_BITS_PER_BLOCK = 8 // FTB_BLOCKS_PER_BYTE
+# FTB_BLOCK_MASK = (1<<FTB_BITS_PER_BLOCK) - 1
+# def ftb_coordinates(block:int) -> tuple[int,int,int]:
+#     index, shift = divmod(block, ATB_BLOCKS_PER_BYTE)
+#     shift *= ATB_BITS_PER_BLOCK
+#     return index, shift, ATB_BLOCK_MASK
+# def ftb_get_has_finaliser(area, block:int):
+#     (area["gc_finaliser_table_start"][(block) // BLOCKS_PER_FTB] >> ((block) & 7)) & 1
+
+BYTES_PER_WORD = 4
+BYTES_PER_BLOCK = 4 * BYTES_PER_WORD
+WORDS_PER_BLOCK = BYTES_PER_BLOCK // BYTES_PER_WORD
+
+def block_from_ptr(area, ptr):
+    return (int(ptr) - int(area["gc_pool_start"])) // BYTES_PER_BLOCK
+def ptr_from_block(area, block):
+    return area["gc_pool_start"][block * BYTES_PER_BLOCK].address
+def get_ptr_area(mem_state, ptr, aligned=True) -> tuple[int,Any]:
+    ptr = int(ptr)
+    if aligned:
+        if ptr & (BYTES_PER_BLOCK - 1) != 0:
+            return None # must be aligned on a block
+    for area_num, heap_area in enumerate(all_heap_areas(mem_state)):
+        start = int(heap_area["gc_pool_start"])
+        end = int(heap_area["gc_pool_end"])
+        if start <= ptr and ptr < end:
+            return area_num, heap_area
+    else:
+        return None
+
+def get_previous_head(area, block):
+    while block >= 0:
+        kind = ATB.lookup(area, block)
+        if kind == ATB.FREE:
+            return None
+        elif kind == ATB.TAIL:
+            block -= 1
+        else: #if kind in {ATB.HEAD, ATB.MARK}:
+            return block
+    else:
+        return None
+    
+def enumerate_ptrs_in_block(mem_state, area, block):
+    for i in range(WORDS_PER_BLOCK):
+        src_ptr = area["gc_pool_start"][block*BYTES_PER_BLOCK + i*BYTES_PER_WORD].address
+        dst_ptr = src_ptr.cast(gdb.lookup_type("uintptr_t").pointer())[0]
+        if get_ptr_area(mem_state, dst_ptr, aligned=True):
+            yield (i, src_ptr, dst_ptr)
+
+def heap_stats_node(mem_state):
+    entries = []
+    for stat in ["total_bytes_allocated", "current_bytes_allocated", "peak_bytes_allocated"]:
+        stat_short = stat.removesuffix("_bytes_allocated")
+        value = int(mem_state[stat])
+        entries.append(f"<dt>{stat_short}</dt><dd>{value}</dd>")
+    label = "<<dl>" + "".join(entries) + "</dl>>"
+    return pydot.Node("stats", shape="plaintext", label=label)
+
+def get_heap_type(ptr) -> str|None:
+    objtype = ptr.cast(mptypes.mp_obj_base)["type"]
+    for typename in mptypes.CONSTANT_TYPES:
+        try:
+            mptype = mptypes[typename]
+        except KeyError:
+            continue
+        if int(objtype) == int(mptype):
+            return typename
+    return None
+
+def get_block_anchor(area_num, block):
+    return f"<a{area_num}.b{block}>"
+def get_node_name(ptr):
+    return f"{int(ptr):#08x}"
+
+def get_pointer_edge_ref(mem_state, ptr):
+    ptr_area = get_ptr_area(mem_state, ptr, False)
+    if ptr_area:
+        area_num, area = ptr_area
+        block = block_from_ptr(area, ptr)
+        head_block = get_previous_head(area, block)
+        head_ptr = ptr_from_block(area, head_block)
+        return f"{int(head_ptr):#08x}:a{area_num}.b{block}"
+    else:
+        return f"{int(ptr):#08x}"
+
+def print_heap_graph(print):
+    dot_graph = pydot.Dot("Heap", graph_type="digraph", fontname="Helvetica,Arial,sans-serif")
+    dot_graph.set_graph_defaults(rankdir="LR")
+    dot_graph.set_node_defaults(fontsize="16", shape="ellipse", fontname="Helvetica,Arial,sans-serif")
+    dot_graph.set_edge_defaults(fontname="Helvetica,Arial,sans-serif")
+
+    mem_state = gdb.lookup_symbol("mp_state_ctx")[0].value()["mem"]
+
+    try:
+        dot_graph.add_node(heap_stats_node(mem_state))
+    except gdb.error:
+        pass
+
+    for area_num, area in enumerate(all_heap_areas(mem_state)):
+
+        atb_len = int(area["gc_alloc_table_byte_len"])
+        block_count = atb_len * ATB.blocks_per_byte
+
+        head_ptr = None
+        node_lines = None
+
+        for block in range(block_count):
+            ptr = ptr_from_block(area, block)
+            kind = ATB.lookup(area, block)
+
+            if kind in {ATB.FREE, ATB.MARK, ATB.TAIL}: # chain ends, write out current
+                if head_ptr is not None:
+                    head_block = block_from_ptr(area, ptr)
+                    head_kind = ATB.lookup(area, head_block)
+                    head_final = FTB.lookup(area, head_block)
+                    
+                    fillcolor = {
+                        ATB.FREE: "gray",
+                        ATB.HEAD: "aliceblue",
+                        ATB.TAIL: "lightgray",
+                        ATB.MARK: "lightcoral",
+                    }[head_kind]
+                    style = '"filled,dashed"' if head_final == FTB.SET else "filled"
+
+                    node = pydot.Node(
+                        get_node_name(head_ptr),
+                        label=repr("|".join(node_lines)),
+                        shape="record", style=style, fillcolor=fillcolor,
+                        sortv=int(head_ptr),
+                    )
+                    dot_graph.add_node(node)
+            
+            if kind in {ATB.HEAD, ATB.MARK, ATB.TAIL}: # start or add to chain
+                if head_ptr is None:
+                    head_ptr = ptr
+                    node_lines = []
+                
+                anchor = get_block_anchor(area_num, block)
+                if kind == ATB.TAIL:
+                    line = anchor
+                else:
+                    name = get_node_name(ptr)
+                    obj = get_heap_type(ptr)
+                    if obj:
+                        line = f"{anchor}{name}\n{obj}"
+                    else:
+                        line = f"{anchor}{name}"
+                node_lines.append(line)
+
+                for i, src_ptr, dst_ptr in enumerate_ptrs_in_block(mem_state, area, block):
+                    # src_name = get_pointer_edge_ref(mem_state, src_ptr)
+                    src_name = f"{int(head_ptr):#08x}:a{area_num}.b{block}"
+                    dst_name = get_pointer_edge_ref(mem_state, dst_ptr)
+                    dot_graph.add_edge(pydot.Edge(src_name, dst_name))
+
+    print(dot_graph)
+    # return dot_graph
+
+
+class MpyHeap(gdb.Command):
+    """Dissasemble MicroPython bytecode.
+    Usage: mpy heap
+    """
+    def __init__(self):
+        super(MpyHeap, self).__init__("mpy heap", gdb.COMMAND_DATA, gdb.COMPLETE_NONE)
+        log.info("Registered command: mpy heap")
+
+    def invoke(self, args, from_tty):
+        try:
+            print_heap_graph(print)
+        except Exception as e:
+            log.exception("%r", e, exc_info=True, stack_info=True)
+            raise e
+
+if has_pydot:
+    MpyHeap()
+
 
 log.info("Loaded MicroPython GDB Plugin")
