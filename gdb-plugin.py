@@ -44,6 +44,9 @@ Mpy()
 
 def get_qstr(qstr: int) -> str:
     last_pool = gdb.lookup_symbol("mp_state_ctx")[0].value()["vm"]["last_pool"]
+    qstr_max = int(last_pool["total_prev_len"]) + int(last_pool["len"])
+    if(qstr >= qstr_max):
+        return None
     while(qstr < int(last_pool["total_prev_len"])):
         last_pool = last_pool["prev"]
     return last_pool["qstrs"][qstr - int(last_pool["total_prev_len"])].string()
@@ -91,7 +94,9 @@ def get_pyobj_str(value) -> str:
     if int(value) & 1:
         return str(int(value) >> 1)
     if (int(value) & 7) == 2:
-        return "'" + get_qstr(int(value) >> 3) + "'"
+        qstr = get_qstr(int(value) >> 3)
+        if qstr:
+            return "'" + qstr + "'"
     if int(value) == 0:
         return "None"
     objtype = value.cast(mptypes.mp_obj_base)["type"]
@@ -686,7 +691,35 @@ def heap_stats_node(mem_state):
     label = "<<dl>" + "".join(entries) + "</dl>>"
     return pydot.Node("stats", shape="plaintext", label=label)
 
+def get_immediate(ptr) -> str|None:
+    if int(ptr) & 1:
+        return f"mp_int({str(int(ptr) >> 1)})"
+    elif (int(ptr) & 7) == 2:
+        qstr = get_qstr(int(ptr) >> 3)
+        if qstr:
+            return f"mp_qstr({qstr!r})"
+        else:
+            return None
+    elif int(ptr) == 0:
+        return "MP_OBJ_NULL"
+    elif int(ptr) == 4:
+        return "MP_OBJ_STOP_ITERATION"
+    elif int(ptr) == 8:
+        return "MP_OBJ_SENTINEL"
+    elif int(ptr)>>3 == 0:
+        return "mp_const_none"
+    elif int(ptr)>>3 == 1:
+        return "mp_const_false"
+    elif int(ptr)>>3 == 3:
+        return "mp_const_true"
+    else:
+        return None
+    
 def get_heap_type(ptr) -> str|None:
+    value = get_immediate(ptr)
+    if value is not None:
+        return value
+    
     objtype = ptr.cast(mptypes.mp_obj_base)["type"]
     for typename in mptypes.CONSTANT_TYPES:
         try:
@@ -702,7 +735,7 @@ def get_block_anchor(area_num, block):
 def get_node_name(ptr):
     return f"{int(ptr):#08x}"
 
-def get_pointer_edge_ref(mem_state, ptr):
+def get_pointer_edge_ref(mem_state, ptr, heap_only=False):
     ptr_area = get_ptr_area(mem_state, ptr, False)
     if ptr_area:
         area_num, area = ptr_area
@@ -710,21 +743,27 @@ def get_pointer_edge_ref(mem_state, ptr):
         head_block = get_previous_head(area, block)
         head_ptr = ptr_from_block(area, head_block)
         return f"{int(head_ptr):#08x}:a{area_num}.b{block}"
-    else:
+    elif not heap_only:
         return f"{int(ptr):#08x}"
+    else:
+        return None
 
-def print_heap_graph(print):
-    dot_graph = pydot.Dot("Heap", graph_type="digraph", fontname="Helvetica,Arial,sans-serif")
-    dot_graph.set_graph_defaults(rankdir="LR")
-    dot_graph.set_node_defaults(fontsize="16", shape="ellipse", fontname="Helvetica,Arial,sans-serif")
-    dot_graph.set_edge_defaults(fontname="Helvetica,Arial,sans-serif")
+def add_heap_ptr(dot_graph:pydot.Graph, mem_state, src_ref:str, dst_ptr, heap_only=False):
+    if int(dst_ptr) == 0:
+        # dst_ref = "null_" + src_ref.split(":")[0]
+        # dot_graph.add_node(pydot.Node(dst_ref, shape="plaintext", label="null"))
+        return False
+    else:
+        dst_ref = get_pointer_edge_ref(mem_state, dst_ptr, heap_only=heap_only)
+    if dst_ref is not None:
+        dot_graph.add_edge(pydot.Edge(src_ref, dst_ref))
+        return True
+    else:
+        return False
 
-    mem_state = gdb.lookup_symbol("mp_state_ctx")[0].value()["mem"]
-
-    # try:
-    #     dot_graph.add_node(heap_stats_node(mem_state))
-    # except gdb.error:
-    #     pass
+def add_mem_blocks(edges:pydot.Graph, nodes:pydot.Graph, mem_state):
+    sub_nodes = pydot.Subgraph("heap", cluster=True, color="blue", label="heap")
+    nodes.add_subgraph(sub_nodes)
 
     for area_num, area in enumerate(all_heap_areas(mem_state)):
 
@@ -758,7 +797,7 @@ def print_heap_graph(print):
                         shape="record", style=style, fillcolor=fillcolor,
                         sortv=int(head_ptr),
                     )
-                    dot_graph.add_node(node)
+                    sub_nodes.add_node(node)
                 head_ptr = None
                 node_lines = None
             
@@ -782,7 +821,325 @@ def print_heap_graph(print):
                     src_name = get_pointer_edge_ref(mem_state, src_ptr)
                     # src_name = f"{int(head_ptr):#08x}:a{area_num}.b{block}"
                     dst_name = get_pointer_edge_ref(mem_state, dst_ptr)
-                    dot_graph.add_edge(pydot.Edge(src_name, dst_name))
+                    edges.add_edge(pydot.Edge(src_name, dst_name))
+
+def struct_get_checked(parent_struct, name, unless_disabled=None):
+    try:
+        return parent_struct[name]
+    except gdb.error as e:
+        if unless_disabled:
+            log.warning("%s is disabled, skipping %s", unless_disabled, name)
+            return None
+        else:
+            raise e
+
+def add_ptr_block(edges:pydot.Graph, nodes:pydot.Graph, mem_state, parent_struct, name:str, unless_disabled=None):
+    ptr = struct_get_checked(parent_struct, name, unless_disabled)
+    if ptr is None:
+        return
+    nodes.add_node(pydot.Node(name, shape="record"))
+    add_heap_ptr(edges, mem_state, name, ptr)
+
+def add_array_block(edges:pydot.Graph, nodes:pydot.Graph, mem_state, parent_struct, name:str, unless_disabled=None):
+    arr = struct_get_checked(parent_struct, name, unless_disabled)
+    if arr is None:
+        return
+    arr_size = arr.type.sizeof // arr[0].type.sizeof
+    lines = []
+    for i in range(arr_size):
+        lines.append(f"<i{i}>")
+        add_heap_ptr(edges, mem_state, f"{name}:i{i}", arr[i])
+    lines[0] = f"{lines[0]}{name}"
+    node = pydot.Node(
+        name,
+        label='"' + "|".join(lines) + '"',
+        shape="record",
+    )
+    nodes.add_node(node)
+
+def add_ptr_or_array_block(edges:pydot.Graph, nodes:pydot.Graph, mem_state, parent_struct, name:str, unless_disabled=None):
+    value = struct_get_checked(parent_struct, name, unless_disabled)
+    if value is None:
+        return
+    if value.type.strip_typedefs().code == gdb.TYPE_CODE_PTR:
+        add_ptr_block(edges, nodes, mem_state, parent_struct, name)
+    else:
+        add_array_block(edges, nodes, mem_state, parent_struct, name)
+
+def add_substruct_block(edges:pydot.Graph, nodes:pydot.Graph, mem_state, parent_struct, name:str, unless_disabled=None):
+    obj = struct_get_checked(parent_struct, name, unless_disabled)
+    if obj is None:
+        return
+    lines = []
+
+    obj_type = get_heap_type(obj.address)
+
+    for i, f in enumerate(obj.type.fields()):
+        line_anchor= f"<{f.name}>"
+        line_lines = []
+        if i == 0:
+            line_lines.append(name)
+
+        if i == 0 and obj_type:
+            line_lines.append(obj_type)
+        elif f.artificial or f.name == None:
+            log.warning("field %r omitted", f)
+        else:
+            value = obj[f.name]
+
+            if f.type.strip_typedefs().code == gdb.TYPE_CODE_PTR:
+                add_heap_ptr(edges, mem_state, f"{name}:{f.name}", value)
+                line_lines.append(f"*{f.name}")
+            else:
+                line_lines.append(f"{f.name} = {value!s}")
+        lines.append(line_anchor + '\\n'.join(line_lines))
+    
+    node = pydot.Node(
+        name,
+        label='"' + "|".join(lines) + '"',
+        shape="record",
+    )
+    nodes.add_node(node)
+
+def add_thread_blocks(edges:pydot.Graph, nodes:pydot.Graph, mem_state, thread_state):
+    sub_nodes = pydot.Subgraph("thread", cluster=True, color="green", label="thread")
+    nodes.add_subgraph(sub_nodes)
+
+    add_ptr_block(edges, sub_nodes, mem_state, thread_state, "dict_locals")
+    add_ptr_block(edges, sub_nodes, mem_state, thread_state, "dict_globals")
+    add_ptr_block(edges, sub_nodes, mem_state, thread_state, "nlr_top")
+    add_ptr_block(edges, sub_nodes, mem_state, thread_state, "nlr_jump_callback_top")
+    add_ptr_block(edges, sub_nodes, mem_state, thread_state, "mp_pending_exception")
+    add_ptr_block(edges, sub_nodes, mem_state, thread_state, "stop_iteration_arg")
+    add_ptr_block(edges, sub_nodes, mem_state, thread_state, "prof_trace_callback", unless_disabled="MICROPY_PY_SYS_SETTRACE")
+    add_ptr_block(edges, sub_nodes, mem_state, thread_state, "current_code_state", unless_disabled="MICROPY_PY_SYS_SETTRACE")
+    add_ptr_block(edges, sub_nodes, mem_state, thread_state, "tls_ssl_context", unless_disabled="MICROPY_PY_SSL_MBEDTLS_NEED_ACTIVE_CONTEXT")
+
+def add_vm_blocks(edges:pydot.Graph, nodes:pydot.Graph, mem_state, vm_state):
+    sub_nodes = pydot.Subgraph("vm", cluster=True, color="red", label="vm")
+    nodes.add_subgraph(sub_nodes)
+
+    add_ptr_block(edges, sub_nodes, mem_state, vm_state, "last_pool")
+    add_ptr_block(edges, sub_nodes, mem_state, vm_state, "m_tracked_head", unless_disabled="MICROPY_TRACKED_ALLOC")
+    add_substruct_block(edges, sub_nodes, mem_state, vm_state, "mp_emergency_exception_obj")
+    add_ptr_or_array_block(edges, sub_nodes, mem_state, vm_state, "mp_emergency_exception_buf", unless_disabled="MICROPY_ENABLE_EMERGENCY_EXCEPTION_BUF")
+    add_substruct_block(edges, sub_nodes, mem_state, vm_state, "mp_kbd_exception", unless_disabled="MICROPY_KBD_EXCEPTION")
+    add_substruct_block(edges, sub_nodes, mem_state, vm_state, "mp_loaded_modules_dict")
+    add_substruct_block(edges, sub_nodes, mem_state, vm_state, "dict_main")
+    add_ptr_block(edges, sub_nodes, mem_state, vm_state, "mp_module_builtins_override_dict", unless_disabled="MICROPY_CAN_OVERRIDE_BUILTINS")
+
+    add_registered_blocks(edges, sub_nodes, mem_state, vm_state)
+    add_sched_queue_blocks(edges, sub_nodes, mem_state, vm_state)
+
+ALL_REGISTERED_ROOT_PTRS = set([
+    "usbd",
+    "bluetooth",
+    "lwip_slip_stream",
+    "virtio_device",
+    "mp_wifi_spi",
+    "mp_wifi_spi",
+    "mp_wifi_poll_list",
+    "vfs_cur",
+    "vfs_mount_table",
+    "bluetooth_btstack_root_pointers",
+    "bluetooth_nimble_memory",
+    "bluetooth_nimble_root_pointers",
+    "os_term_dup_obj",
+    "machine_config_main",
+    "esp32_pcnt_obj_head",
+    "machine_timer_obj_head",
+    "espnow_singleton",
+    "uart0_rxbuf",
+    "espnow_buffer",
+    "machine_rtc_irq_object",
+    "mp_bthci_uart",
+    "pwm_active_events",
+    "pwm_pending_events",
+    "pin_class_mapper",
+    "pin_class_map_dict",
+    "modmusic_music_data",
+    "keyboard_interrupt_obj",
+    "pyb_config_main",
+    "pyb_stdio_uart",
+    "pyb_switch_callback",
+    "pyb_config_main",
+    "pyb_stdio_uart",
+    "pin_class_mapper",
+    "pin_class_map_dict",
+    "subghz_callback",
+    "pyb_hid_report_desc",
+    "pyb_switch_callback",
+    "mmap_region_head",
+    "proxy_c_ref",
+    "proxy_c_dict",
+    "machine_pin_irq_list",
+    "machine_timer_obj_head",
+    "bluetooth_zephyr_root_pointers",
+    "cur_exception",
+    "sys_exitfunc",
+    "persistent_code_root_pointers",
+    "track_reloc_code_list",
+    "repl_line",
+])
+ALL_REGISTERED_ROOT_ARRAYS = set([
+    "machine_i2c_target_mem_obj",
+    "machine_i2c_target_irq_obj",
+    "dupterm_objs",
+    "machine_pin_irq_obj",
+    "machine_uart_obj_all",
+    "pyb_uart_objs",
+    "machine_i2s_obj",
+    "machine_pin_irq_handler",
+    "pin_irq_handler",
+    "machine_i2s_obj",
+    "machine_pin_irq_objects",
+    "async_data",
+    "pin_irq_handlers",
+    "nrf_uart_irq_obj",
+    "pyb_extint_callback",
+    "machine_uart_obj_all",
+    "pyb_timer_obj_all",
+    "machine_i2s_obj",
+    "machine_pin_irq_obj",
+    "rp2_uart_rx_buffer",
+    "rp2_uart_tx_buffer",
+    "rp2_uart_irq_obj",
+    "rp2_dma_irq_obj",
+    "rp2_pio_irq_obj",
+    "rp2_state_machine_irq_obj",
+    "machine_pin_irq_objects",
+    "sercom_table",
+    "pyb_extint_callback",
+    "machine_i2s_obj",
+    "pyb_can_obj_all",
+    "pyb_timer_obj_all",
+    "machine_uart_obj_all",
+    "pyb_usb_vcp_irq",
+    "sys_mutable",
+])
+ALL_REGISTERED_ROOT_STRUCTS = set([
+    "mod_network_nic_list",
+    "mp_irq_obj_list",
+    "pyb_sleep_obj_list",
+    "pyb_timer_channel_obj_list",
+    "mp_sys_argv_obj",
+])
+# TODO how to handle: MP_REGISTER_ROOT_POINTER(const char *readline_hist[MICROPY_READLINE_HISTORY_SIZE]);
+def add_registered_blocks(edges:pydot.Graph, nodes:pydot.Graph, mem_state, vm_state):
+    sub_nodes = pydot.Subgraph("registered", cluster=True, color="red", style="dashed", label="MP_REGISTER_ROOT_POINTER")
+    nodes.add_subgraph(sub_nodes)
+
+    for ptr_name in ALL_REGISTERED_ROOT_PTRS:
+        add_ptr_block(edges, sub_nodes, mem_state, vm_state, ptr_name, unless_disabled=ptr_name)
+    for array_name in ALL_REGISTERED_ROOT_ARRAYS:
+        add_array_block(edges, sub_nodes, mem_state, vm_state, array_name, unless_disabled=array_name)
+    for struct_name in ALL_REGISTERED_ROOT_STRUCTS:
+        add_substruct_block(edges, sub_nodes, mem_state, vm_state, struct_name, unless_disabled=struct_name)
+
+def add_sched_queue_blocks(edges:pydot.Graph, nodes:pydot.Graph, mem_state, vm_state):
+    sub_nodes = pydot.Subgraph("sched_queue", cluster=True, color="black", label="sched_queue")
+    nodes.add_subgraph(sub_nodes)
+
+    sched_queue = struct_get_checked(vm_state, "sched_queue", unless_disabled="MICROPY_ENABLE_SCHEDULER")
+    if sched_queue == None:
+        return
+    sched_queue_size = sched_queue.type.sizeof // sched_queue[0].type.sizeof
+
+    for i in range(sched_queue_size):
+        sched_item = sched_queue[i]
+        node = pydot.Node(
+            f"sched_item_{i}",
+            label=f'"<func>sched_queue[{i}]\\nfunc|<arg>arg"',
+            shape="record",
+        )
+        sub_nodes.add_node(node)
+        add_heap_ptr(edges, mem_state, f"sched_item_{i}:func", sched_item["func"])
+        add_heap_ptr(edges, mem_state, f"sched_item_{i}:arg", sched_item["arg"])
+
+def add_cpu_blocks(edges:pydot.Graph, nodes:pydot.Graph, mem_state):
+    sub_nodes = pydot.Subgraph("cpu", cluster=True, color="purple", label="cpu")
+    nodes.add_subgraph(sub_nodes)
+
+    for reg in gdb.selected_inferior().architecture().registers("general"):
+        value = gdb.newest_frame().read_register(reg)
+        imm_val = get_immediate(value)
+        
+        if imm_val is None:
+            node = pydot.Node(
+                f"{reg.name}",
+                shape="record",
+            )
+            add_heap_ptr(edges, mem_state, f"{reg.name}", value)
+        else:
+            node = pydot.Node(
+                f"{reg.name}",
+                label=f"{reg.name}\\n{imm_val}",
+                shape="record",
+            )
+        sub_nodes.add_node(node)
+
+def add_stack_blocks(edges:pydot.Graph, nodes:pydot.Graph, mem_state, thread_state):
+    sub_nodes = pydot.Subgraph("stack", cluster=True, color="maroon", label="stack")
+    nodes.add_subgraph(sub_nodes)
+
+    frame = gdb.selected_frame()
+    frame_nodes = pydot.Subgraph(f"level{frame.level()}", cluster=True, color="maroon", style="dashed", label=f"level{frame.level()}")
+    sub_nodes.add_subgraph(frame_nodes)
+
+    stack_top = thread_state["stack_top"]
+    stack_bot = frame.read_register("sp")
+    stack_bot = stack_bot - (int(stack_bot) % BYTES_PER_WORD)
+
+    stack = stack_bot.cast(gdb.lookup_type("uintptr_t").pointer())
+    stack_size = int(stack_top - stack_bot) // BYTES_PER_WORD
+
+    for i in range(stack_size):
+        value = stack[i]
+        name = get_pointer_edge_ref(mem_state, value.address)
+        imm_val = get_immediate(value)
+        
+        try:
+            if value.address >= frame.older().read_register("sp"):
+                frame = frame.older()
+                frame_nodes = pydot.Subgraph(f"level{frame.level()}", cluster=True, color="maroon", style="dashed", label=f"level{frame.level()}")
+                sub_nodes.add_subgraph(frame_nodes)
+        except AttributeError:
+            pass
+
+        node = None
+        if imm_val is None:
+            if add_heap_ptr(edges, mem_state, name, value, heap_only=True):
+                node = pydot.Node(
+                    name,
+                    shape="record",
+                )
+        else:
+            pass
+            # node = pydot.Node(
+            #     name,
+            #     label=f"{name}\\n{imm_val}",
+            #     shape="record",
+            # )
+        if node:
+            frame_nodes.add_node(node)
+
+def print_heap_graph(print):
+    dot_graph = pydot.Dot("Heap", graph_type="digraph", fontname="Helvetica,Arial,sans-serif", layout="dot", ranksep="2.0")
+    dot_graph.set_graph_defaults(rankdir="LR")
+    dot_graph.set_node_defaults(fontsize="16", shape="ellipse", fontname="Helvetica,Arial,sans-serif")
+    dot_graph.set_edge_defaults(fontname="Helvetica,Arial,sans-serif")
+
+    state = gdb.lookup_symbol("mp_state_ctx")[0].value()
+    mem_state = state["mem"]
+    thread_state = state["thread"]
+    vm_state = state["vm"]
+
+    add_mem_blocks(dot_graph, dot_graph, mem_state)
+    add_thread_blocks(dot_graph, dot_graph, mem_state, thread_state)
+    add_vm_blocks(dot_graph, dot_graph, mem_state, vm_state)
+    add_cpu_blocks(dot_graph, dot_graph, mem_state)
+    add_stack_blocks(dot_graph, dot_graph, mem_state, thread_state)
+    
 
     print(dot_graph)
     # return dot_graph
