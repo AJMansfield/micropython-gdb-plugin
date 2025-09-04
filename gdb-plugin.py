@@ -1123,6 +1123,33 @@ def add_stack_blocks(edges:pydot.Graph, nodes:pydot.Graph, mem_state, thread_sta
         if node:
             frame_nodes.add_node(node)
 
+def all_pthreads():
+    thread = gdb.lookup_symbol("thread")[0].value()
+    while int(thread) != 0:
+        yield thread[0]
+        thread = thread[0]['next']
+
+def add_pthread_blocks(edges:pydot.Graph, nodes:pydot.Graph, mem_state):
+    sub_nodes = pydot.Subgraph("stack", cluster=True, color="chartreuse", label="pthreads")
+    nodes.add_subgraph(sub_nodes)
+
+    for thread in all_pthreads():
+        # log.warning("thread = %r", thread)
+        name = get_pointer_edge_ref(mem_state, thread.address)
+        tid = int(thread['id'])
+        arg = thread['arg']
+
+        node = pydot.Node(
+            name,
+            label=f"pthread {tid}|<arg>arg",
+            shape="record",
+        )
+        sub_nodes.add_node(node)
+        add_heap_ptr(edges, mem_state, f"{name}:arg", arg, heap_only=True)
+
+        # TODO: get other threads' register contents?
+        
+
 def print_heap_graph(print):
     dot_graph = pydot.Dot("Heap", graph_type="digraph", fontname="Helvetica,Arial,sans-serif", layout="dot", ranksep="2.0")
     dot_graph.set_graph_defaults(rankdir="LR")
@@ -1139,6 +1166,7 @@ def print_heap_graph(print):
     add_vm_blocks(dot_graph, dot_graph, mem_state, vm_state)
     add_cpu_blocks(dot_graph, dot_graph, mem_state)
     add_stack_blocks(dot_graph, dot_graph, mem_state, thread_state)
+    add_pthread_blocks(dot_graph, dot_graph, mem_state)
     
 
     print(dot_graph)
