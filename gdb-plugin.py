@@ -34,383 +34,8 @@ except ImportError:
     has_pydot = False
 
 
-class Mpy(gdb.Command):
-    """Examine MicroPython interpreter state."""
-    def __init__(self):
-        super(Mpy, self).__init__("mpy", gdb.COMMAND_USER, gdb.COMPLETE_COMMAND, True)
-        log.info("Registered group: mpy")
-Mpy()
-
-
-def get_qstr(qstr: int) -> str:
-    last_pool = gdb.lookup_symbol("mp_state_ctx")[0].value()["vm"]["last_pool"]
-    qstr_max = int(last_pool["total_prev_len"]) + int(last_pool["len"])
-    if(qstr >= qstr_max):
-        return None
-    while(qstr < int(last_pool["total_prev_len"])):
-        last_pool = last_pool["prev"]
-    return last_pool["qstrs"][qstr - int(last_pool["total_prev_len"])].string()
-
-class MpyQstr(gdb.Command):
-    """Decode a uniQueSTR value.
-    Usage: mpy qstr VALUE
-    """
-    def __init__(self):
-        super(MpyQstr, self).__init__("mpy qstr", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
-        log.info("Registered command: mpy qstr")
-    
-    def invoke(self, args, from_tty):
-        print(get_qstr(int(args)))
-MpyQstr()
-
-
-def get_pystate(frame):
-    try:
-        return frame.read_var("code_state")
-    except ValueError:
-        return get_pystate(frame.older())
-    except AttributeError:
-        return None
-        
-class MpyState(gdb.Command):
-    """Show the MicroPython stack.
-    Usage: mpy state
-    """
-    def __init__(self):
-        super(MpyState, self).__init__("mpy state", gdb.COMMAND_STACK, gdb.COMPLETE_NONE)
-        log.info("Registered command: mpy state")
-    
-    def invoke(self, args, from_tty):
-        frame = gdb.selected_frame()
-        code_state = get_pystate(frame)
-        n_state = int(code_state["n_state"])
-        state = code_state["state"]
-        for i in range(n_state):
-            print(get_pyobj_str(state[i]))
-MpyState()
-
-
-def get_pyobj_str(value) -> str:
-    if int(value) & 1:
-        return str(int(value) >> 1)
-    if (int(value) & 7) == 2:
-        qstr = get_qstr(int(value) >> 3)
-        if qstr:
-            return "'" + qstr + "'"
-    if int(value) == 0:
-        return "None"
-    objtype = value.cast(mptypes.mp_obj_base)["type"]
-    if int(objtype) == int(mptypes.mp_type_dict):
-        dic = value.cast(mptypes.mp_obj_dict)
-        vals = int(dic["map"]["alloc"])
-        strs = ""
-        for i in range(vals):
-            entry = dic["map"]["table"][i]
-            strs += get_pyobj_str(entry["key"]) + ": " + get_pyobj_str(entry["value"]) + ",\n "
-        return "dict: {" + strs + "}"
-    if int(objtype) == int(mptypes.mp_type_module) and False:
-        print("module")
-        dic = value.cast(mptypes.mp_obj_module)
-        print(dic)
-        return "module(" + get_pyobj_str(dic["globals"]) + ")"
-    obj = str(objtype).split(" ")
-    if len(obj) == 1:
-        obj = obj[0]
-    else:
-        obj = obj[1]
-    return "object(" + hex(value) + ") " + obj
-
-class MpyObj(gdb.Command):
-    """Pretty-print a MicroPython object.
-    Usage: mpy obj VALUE
-    """
-    def __init__(self):
-        super(MpyObj, self).__init__("mpy obj", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
-        log.info("Registered command: mpy obj")
-
-    def complete(self, text, word):
-        return gdb.COMPLETE_NONE
-
-    def invoke(self, args, from_tty):
-        print(get_pyobj_str(gdb.parse_and_eval(args)))
-MpyObj()
-
-def mp_obj_is_small_int(o):
-    return gdb.parse_and_eval(f"MP_OBJ_IS_SMALL_INT({int(o)})")
-def mp_obj_small_int_value(o):
-    return gdb.parse_and_eval(f"MP_OBJ_SMALL_INT_VALUE({int(o)})")
-def mp_obj_is_qstr(o):
-    return gdb.parse_and_eval(f"MP_OBJ_IS_QSTR({int(o)})")
-def mp_obj_qstr_value(o):
-    return gdb.parse_and_eval(f"MP_OBJ_QSTR_VALUE({int(o)})")
-def mp_obj_is_immediate_obj(o):
-    return gdb.parse_and_eval(f"MP_OBJ_IS_IMMEDIATE_OBJ({int(o)})")
-def mp_obj_immediate_obj_value(o):
-    return gdb.parse_and_eval(f"MP_OBJ_IMMEDIATE_OBJ_VALUE({int(o)})")
-def mp_obj_is_obj(o):
-    return gdb.parse_and_eval(f"MP_OBJ_IS_OBJ({int(o)})")
-
-def mp_obj_null():
-    return gdb.parse_and_eval("MP_OBJ_NULL")
-def mp_obj_stop_iteration():
-    return gdb.parse_and_eval("MP_OBJ_STOP_ITERATION")
-def mp_obj_sentinel():
-    return gdb.parse_and_eval("MP_OBJ_SENTINEL")
-
-def mp_map_slot_is_filled(map: gdb.Value, pos: int):
-    return map['table'][pos]['key'] not in { mp_obj_null(), mp_obj_sentinel() }
-
-class MpyImmObjPrinter(gdb.ValuePrinter):
-    def __init__(self, value):
-        self.__value = value
-
-    def to_string(self):
-        try:
-            if mp_obj_is_small_int(self.__value):
-                return mp_obj_small_int_value(self.__value)#.cast(gdb.lookup_type("mp_int_t"))
-            # return "imm_obj"
-            elif mp_obj_is_qstr(self.__value):
-                return get_qstr(mp_obj_qstr_value(self.__value))
-            elif mp_obj_is_immediate_obj(self.__value):
-                n = mp_obj_immediate_obj_value(self.__value)
-                return f"imm({n})"
-            elif mp_obj_is_obj(self.__value):
-                return "object" # TODO children!
-            else:
-                return f"unknown({int(self.__value)})"
-        except Exception as e:
-            log.exception("%r", e, exc_info=True, stack_info=True)
-            raise e
-        
-    def display_hint(self):
-        try:
-            if mp_obj_is_small_int(self.__value):
-                return None
-            # return "string"
-            elif mp_obj_is_qstr(self.__value):
-                return "string"
-            elif mp_obj_is_immediate_obj(self.__value):
-                return None
-            elif mp_obj_is_obj(self.__value):
-                return None
-            else:
-                return None
-        except Exception as e:
-            log.exception("%r", e, exc_info=True, stack_info=True)
-            raise e
-    
-    @classmethod
-    def lookup(cls, value):
-        if value.type.name in {"mp_obj_t", "mp_const_obj_t", "mp_rom_obj_t"}:
-            return cls(value)
-        else:
-            return None
-gdb.current_objfile().pretty_printers.append(MpyImmObjPrinter.lookup)
-log.info("Registered pretty printer: %s", MpyImmObjPrinter.__name__)
-
-class MpyMapPrinter(gdb.ValuePrinter):
-    def __init__(self, value):
-        self.__value = value
-
-    def to_string(self):
-        try:
-            typename = str(self.__value.type)
-            q = "Q" if self.__value['all_keys_are_qstrs'] else "q"
-            f = "F" if self.__value['is_fixed'] else "f"
-            o = "O" if self.__value['is_ordered'] else "o"
-            used = int(self.__value['used'])
-            alloc = int(self.__value['alloc'])
-            return f"{typename} <{q}{f}{o}> {used} of {alloc}"
-        except Exception as e:
-            log.exception("%r", e, exc_info=True, stack_info=True)
-            raise e
-
-    def display_hint(self):
-        return 'map'
-    
-    def children(self):
-        try:
-            n = 0
-            for i in range(self.__value['alloc']):
-                if mp_map_slot_is_filled(self.__value, i):
-                    elem = self.__value['table'][i]
-                    yield (f"[{n}]", elem['key'])
-                    yield (f"[{n+1}]", elem['value'])
-                    n += 2
-        except Exception as e:
-            log.exception("%r", e, exc_info=True, stack_info=True)
-            raise e
-
-    def num_children(self):
-        return self.__value['used'] * 2
-    
-    # def child(self, i):
-    #     elem = self.__value['table'][i]
-    #     return (elem['key'], elem['value'])
-    
-    @classmethod
-    def lookup(cls, value):
-        # log.info("lookup: %r, %r, %r", value, value.type, value.address)
-        if str(value.type) in {"mp_map_t", "mp_map_t *"}:
-            return cls(value)
-        else:
-            return None
-gdb.current_objfile().pretty_printers.append(MpyMapPrinter.lookup)
-log.info("Registered pretty printer: %s", MpyMapPrinter.__name__)
-
-
-
-def get_pydis(bc):
-    sig = MPY_BC_Sig()
-    sig.load(bc, 0)
-    sig.print()
-    mpy_disassemble(bc, sig.end, None)
-
-class MpyDis(gdb.Command):
-    """Dissasemble MicroPython bytecode.
-    Usage: mpy dis VALUE
-    """
-    def __init__(self):
-        super(MpyDis, self).__init__("mpy dis", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
-        log.info("Registered command: mpy dis")
-
-    def invoke(self, args, from_tty):
-        value = gdb.parse_and_eval(args)
-        objtype = value.cast(mptypes.mp_obj_base)["type"]
-        if int(objtype) == int(mptypes.mp_type_fun_bc):
-            get_pydis(value.cast(mptypes.mp_obj_fun_bc))
-
-if has_mpy_tool:
-    MpyDis()
-
-
-def mpy_disassemble(fun_bc, ptr, current_ptr):
-    Opcode = mpy_tool.Opcode
-
-    bc = fun_bc["bytecode"]
-    qstr_table = fun_bc["context"]["constants"]["qstr_table"]
-    obj_table = fun_bc["context"]["constants"]["obj_table"]
-    biggest_jump = 0
-    instructions = []
-    offsets = []
-    labels = dict()
-    ip = ptr
-    while True:
-        offsets.append(ptr)
-        op = int(bc[ip])
-        fmt, sz, arg, _ = mpy_tool.mp_opcode_decode(bc, ip)
-        if (bc[ip] & 0xf0) == Opcode.MP_BC_BASE_JUMP_E:
-            biggest_jump = max(biggest_jump, ip + arg)
-        if bc[ip] == Opcode.MP_BC_LOAD_CONST_OBJ:
-            arg = get_pyobj_str(obj_table[arg])
-            pass
-        if fmt == mpy_tool.MP_BC_FORMAT_QSTR:
-            arg = get_qstr(int(qstr_table[arg]))
-        elif fmt in (mpy_tool.MP_BC_FORMAT_VAR_UINT, mpy_tool.MP_BC_FORMAT_OFFSET):
-            pass
-        else:
-            arg = ""
-        print(
-            "  %04x %s %s" % (ip - ptr, Opcode.mapping[bc[ip]], arg)
-        )
-        if bc[ip] == Opcode.MP_BC_RETURN_VALUE:
-            if biggest_jump < ip:
-                break
-        ip += sz
-        #self.disassemble_children()
-
-# bytecode layout:
-#
-#  func signature  : var uint
-#      contains six values interleaved bit-wise as: xSSSSEAA [xFSSKAED repeated]
-#          x = extension           another byte follows
-#          S = n_state - 1         number of entries in Python value stack
-#          E = n_exc_stack         number of entries in exception stack
-#          F = scope_flags         four bits of flags, MP_SCOPE_FLAG_xxx
-#          A = n_pos_args          number of arguments this function takes
-#          K = n_kwonly_args       number of keyword-only arguments this function takes
-#          D = n_def_pos_args      number of default positional arguments
-#
-#  prelude size    : var uint
-#      contains two values interleaved bit-wise as: xIIIIIIC repeated
-#          x = extension           another byte follows
-#          I = n_info              number of bytes in source info section (always > 0)
-#          C = n_cells             number of bytes/cells in closure section
-#
-#  source info section:
-#      simple_name : var qstr      always exists
-#      argname0    : var qstr
-#      ...         : var qstr
-#      argnameN    : var qstr      N = num_pos_args + num_kwonly_args - 1
-#      <line number info>
-#
-#  closure section:
-#      local_num0  : byte
-#      ...         : byte
-#      local_numN  : byte          N = n_cells-1
-#
-#  <bytecode>                   // bytecode layout:
-class MPY_BC_Sig:
-    def __init__(self):
-        pass
-
-    def load(self, fun_bc, ip):
-        bytecode = fun_bc["bytecode"]
-        qstr_table = fun_bc["context"]["constants"]["qstr_table"]
-        sig = mpy_tool.extract_prelude(bytecode, ip)
-        (self.S, self.E, self.F, self.A, self.K, self.D) = sig[5]
-        (self.I, self.C) = sig[6]
-        self.end = sig[4]
-        self.lines = []
-        print(qstr_table[0])
-        self.function_name = MpyQstr.get_qstr(int(qstr_table[sig[7][0]]))
-        self.args = [get_qstr(qstr_table[int(i)]) for i in sig[7][1:]]
-        self.source = get_qstr(qstr_table[0])
-            
-        #now 1 qstr function name
-        #now A + K strings, args
-        source_line = 1
-        ptr = sig[2]
-        while ptr < sig[3]:
-            c = int(bytecode[ptr])
-            b = 0
-            l = 0
-            if (c & 0x80) == 0:
-                # 0b0LLBBBBB encoding
-                b = c & 0x1f
-                l = c >> 5
-                ptr += 1
-            else:
-                # 0b1LLLBBBB 0bLLLLLLLL encoding (l's LSB in second byte)
-                b = c & 0xf
-                l = ((c << 4) & 0x700) | int(bytecode[ptr + 1])
-                ptr += 2
-            self.lines.append((l,b))
-
-    def set_val(self, S, E, F, A, K, D, C, I):
-        self.S = S
-        self.E = E
-        self.F = F
-        self.A = A
-        self.K = K
-        self.D = D
-        self.C = C
-        self.I = I
-
-    def map_line(self, ip):
-        line = 1
-        for (l, b) in self.lines:
-            if b > ip:
-                break
-            line += l
-            ip -= b
-        return line
-
-    def print(self):
-        print("state: " + str(self.S) + ", exc: " + str(self.E) + ", scope: " + str(self.F) + ", pos_args: " + str(self.A) + ", kwonly_args: " + str(self.K) + ", def_args: " + str(self.D) + ", info: " + str(self.I) + ", cells: " + str(self.C))
-
 class MpTypes:
-    CONSTANT_TYPES = set([
+    CONSTANT_TYPES = [
         # From obj.h
         "mp_type_type",
         "mp_type_object",
@@ -577,7 +202,82 @@ class MpTypes:
         "mp_type_zip",
         "mp_type_frame",
         "mp_type_checked_fun",
-    ])
+    ]
+
+    MODULES = [
+        "example_user_cmodule",
+        "example_user_cmodule",
+        "mp_module_subsystem",
+        "myport_module",
+        "example_user_cmodule",
+        "cppexample_user_cmodule",
+        "example_package_user_cmodule",
+        "mp_module_asyncio",
+        "mp_module_btree",
+        "mp_module_deflate",
+        "mp_module_framebuf",
+        "mp_module_lwip",
+        "mp_module_marshal",
+        "mp_module_network",
+        "mp_module_onewire",
+        "openamp_module",
+        "mp_module_tls",
+        "mp_module_tls",
+        "mp_module_uctypes",
+        "mp_module_vfs",
+        "mp_module_webrepl",
+        "mp_module___main__",
+        "mp_module_builtins",
+        "mp_module_micropython",
+        "mp_module_builtins",
+        "mp_module_micropython",
+        "mp_module___main__",
+        "mp_module_alif",
+        "mp_module___main__",
+        "mp_module_builtins",
+        "mp_module_builtins",
+        "mp_module___main__",
+        "mp_module_network",
+        "wipy_module",
+        "esp_module",
+        "esp32_module",
+        "mp_module_espnow",
+        "esp_module",
+        "mp_module_espnow",
+        "mp_module_mimxrt",
+        "mp_module___main__",
+        "mp_module_builtins",
+        "mp_module_builtins",
+        "mp_module___main__",
+        "microbit_module",
+        "ble_module",
+        "board_module",
+        "music_module",
+        "nrf_module",
+        "mp_module_ubluepy",
+        "pyb_module",
+        "mp_module_renesas",
+        "mp_module_rp2",
+        "mp_module_samd",
+        "pyb_module",
+        "stm_module",
+        "spiflash_module",
+        "mp_module_ffi",
+        "mp_module_jni",
+        "mp_module_termios",
+        "mp_module_js",
+        "mp_module_jsffi",
+        "mp_module_zephyr",
+        "mp_module_zsensor",
+        "mp_module_builtins",
+        "mp_module_cmath",
+        "mp_module_gc",
+        "mp_module_math",
+        "mp_module_micropython",
+        "mp_module_sys",
+        "mp_module_thread",
+        "mp_module___main__",
+    ]
 
     @functools.cache
     def lookup(self, name):
@@ -601,6 +301,440 @@ class MpTypes:
             raise AttributeError(f"Can't find MpType {name}", name=name, obj=self)
         
 mptypes = MpTypes()
+
+
+class Mpy(gdb.Command):
+    """Examine MicroPython interpreter state."""
+    def __init__(self):
+        super(Mpy, self).__init__("mpy", gdb.COMMAND_USER, gdb.COMPLETE_COMMAND, True)
+        log.info("Registered group: mpy")
+Mpy()
+
+
+def get_qstr(qstr: int) -> str:
+    return get_qstr_ref(qstr).string()
+
+def get_qstr_ref(qstr: int) -> str:
+    last_pool = gdb.lookup_symbol("mp_state_ctx")[0].value()["vm"]["last_pool"]
+    qstr_max = int(last_pool["total_prev_len"]) + int(last_pool["len"])
+    if(qstr >= qstr_max):
+        return None
+    while(qstr < int(last_pool["total_prev_len"])):
+        last_pool = last_pool["prev"]
+    return last_pool["qstrs"][qstr - int(last_pool["total_prev_len"])]
+
+class MpyQstr(gdb.Command):
+    """Decode a uniQueSTR value.
+    Usage: mpy qstr VALUE
+    """
+    def __init__(self):
+        super(MpyQstr, self).__init__("mpy qstr", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
+        log.info("Registered command: mpy qstr")
+    
+    def invoke(self, args, from_tty):
+        print(get_qstr(int(args)))
+MpyQstr()
+
+
+def get_pystate(frame):
+    try:
+        return frame.read_var("code_state")
+    except ValueError:
+        return get_pystate(frame.older())
+    except AttributeError:
+        return None
+        
+class MpyState(gdb.Command):
+    """Show the MicroPython stack.
+    Usage: mpy state
+    """
+    def __init__(self):
+        super(MpyState, self).__init__("mpy state", gdb.COMMAND_STACK, gdb.COMPLETE_NONE)
+        log.info("Registered command: mpy state")
+    
+    def invoke(self, args, from_tty):
+        frame = gdb.selected_frame()
+        code_state = get_pystate(frame)
+        n_state = int(code_state["n_state"])
+        state = code_state["state"]
+        for i in range(n_state):
+            print(get_pyobj_str(state[i]))
+MpyState()
+
+
+def get_pyobj_str(value) -> str:
+    if int(value) & 1:
+        return str(int(value) >> 1)
+    if (int(value) & 7) == 2:
+        qstr = get_qstr(int(value) >> 3)
+        if qstr:
+            return "'" + qstr + "'"
+    if int(value) == 0:
+        return "None"
+    objtype = value.cast(mptypes.mp_obj_base)["type"]
+    if int(objtype) == int(mptypes.mp_type_dict):
+        dic = value.cast(mptypes.mp_obj_dict)
+        vals = int(dic["map"]["alloc"])
+        strs = ""
+        for i in range(vals):
+            entry = dic["map"]["table"][i]
+            strs += get_pyobj_str(entry["key"]) + ": " + get_pyobj_str(entry["value"]) + ",\n "
+        return "dict: {" + strs + "}"
+    if int(objtype) == int(mptypes.mp_type_module) and False:
+        print("module")
+        dic = value.cast(mptypes.mp_obj_module)
+        print(dic)
+        return "module(" + get_pyobj_str(dic["globals"]) + ")"
+    obj = str(objtype).split(" ")
+    if len(obj) == 1:
+        obj = obj[0]
+    else:
+        obj = obj[1]
+    return "object(" + hex(value) + ") " + obj
+
+class MpyObj(gdb.Command):
+    """Pretty-print a MicroPython object.
+    Usage: mpy obj VALUE
+    """
+    def __init__(self):
+        super(MpyObj, self).__init__("mpy obj", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
+        log.info("Registered command: mpy obj")
+
+    def complete(self, text, word):
+        return gdb.COMPLETE_NONE
+
+    def invoke(self, args, from_tty):
+        print(get_pyobj_str(gdb.parse_and_eval(args)))
+MpyObj()
+
+def mp_obj_is_small_int(o):
+    return gdb.parse_and_eval(f"MP_OBJ_IS_SMALL_INT({int(o)})")
+def mp_obj_small_int_value(o):
+    return gdb.parse_and_eval(f"MP_OBJ_SMALL_INT_VALUE({int(o)})")
+def mp_obj_is_qstr(o):
+    return gdb.parse_and_eval(f"MP_OBJ_IS_QSTR({int(o)})")
+def mp_obj_qstr_value(o):
+    return gdb.parse_and_eval(f"MP_OBJ_QSTR_VALUE({int(o)})")
+def mp_obj_is_immediate_obj(o):
+    return gdb.parse_and_eval(f"MP_OBJ_IS_IMMEDIATE_OBJ({int(o)})")
+def mp_obj_immediate_obj_value(o):
+    return gdb.parse_and_eval(f"MP_OBJ_IMMEDIATE_OBJ_VALUE({int(o)})")
+def mp_obj_is_obj(o):
+    return gdb.parse_and_eval(f"MP_OBJ_IS_OBJ({int(o)})")
+
+def mp_obj_null():
+    return gdb.parse_and_eval("MP_OBJ_NULL")
+def mp_obj_stop_iteration():
+    return gdb.parse_and_eval("MP_OBJ_STOP_ITERATION")
+def mp_obj_sentinel():
+    return gdb.parse_and_eval("MP_OBJ_SENTINEL")
+
+def mp_is_instance_type(o):
+    return (o['base']['type']['flags'] & gdb.parse_and_eval("MP_TYPE_FLAG_INSTANCE_TYPE")) != 0
+
+def mp_map_slot_is_filled(map: gdb.Value, pos: int):
+    return map['table'][pos]['key'] not in { mp_obj_null(), mp_obj_sentinel() }
+
+class MpyObjPrinter(gdb.ValuePrinter):
+    def __init__(self, value):
+        self.__value = value
+
+    def to_string(self):
+        try:
+            if self.__value == mp_obj_null():
+                return "null"
+            elif self.__value == mp_obj_stop_iteration():
+                return "stop_iteration"
+            elif self.__value == mp_obj_sentinel():
+                return "sentinel"
+            elif mp_obj_is_small_int(self.__value):
+                return mp_obj_small_int_value(self.__value)
+            elif mp_obj_is_qstr(self.__value):
+                return get_qstr_ref(mp_obj_qstr_value(self.__value))
+            elif mp_obj_is_immediate_obj(self.__value):
+                n = mp_obj_immediate_obj_value(self.__value)
+                return f"imm({n})"
+            elif mp_obj_is_obj(self.__value):
+                obj = self.__value.cast(mptypes.mp_obj_object)
+                log.info("obj: %s, %r", obj, obj)
+
+                if mp_is_instance_type(obj):
+                    obj = obj.__value.cast(mptypes.mp_obj_instance)
+
+                obj_type = obj['base']['type']
+                log.info("obj_type: %s, %r", obj_type, obj_type)
+                # convert from mp_type_X mp_obj_X_t
+                # convert from mp_type_dict mp_obj_dict_t
+                for type_obj_name in mptypes.CONSTANT_TYPES:
+                    type_obj = getattr(mptypes, type_obj_name, None)
+                    if type_obj is None:
+                        continue
+                    struct_name = type_obj_name.replace("mp_type_", "mp_obj_")
+                    struct_type = getattr(mptypes, struct_name, None)
+                    if struct_type is None:
+                        continue
+
+                    # log.info("type_obj: %s, %r", type_obj, type_obj)
+                    
+                    if int(type_obj) == int(obj_type):
+                        
+                        log.info("type_obj_name: %s, %r", type_obj_name, type_obj_name)
+                        log.info("type_obj: %s, %r", type_obj, type_obj)
+                        log.info("struct_name: %s, %r", struct_name, struct_name)
+                        log.info("struct_type: %s, %r", struct_type, struct_type)
+                        log.info("presenting as decoded (struct_type)")
+                    
+                        obj = obj.cast(struct_type)
+                        break
+                    
+                log.info("presenting as (%s)", obj.type)
+                return obj
+            else:
+                return f"unknown({int(self.__value)})"
+        except Exception as e:
+            log.exception("%r", e, exc_info=True, stack_info=True)
+            raise e
+        
+    def children(self):
+        try:
+            obj = self.to_string()
+            try:
+                obj['base']
+            except gdb.error:
+                return
+
+            yield ("*", obj[0])
+            yield ("typename", get_qstr_ref(obj['base']['type']['name']))
+        except Exception as e:
+            log.exception("%r", e, exc_info=True, stack_info=True)
+            raise e
+        
+    def display_hint(self):
+        return None
+        try:
+            if mp_obj_is_qstr(self.__value):
+                return "string"
+            else:
+                return None
+        except Exception as e:
+            log.exception("%r", e, exc_info=True, stack_info=True)
+            raise e
+
+    @classmethod
+    def lookup(cls, value):
+        if value.type.name in {"mp_obj_t", "mp_const_obj_t", "mp_rom_obj_t"}:
+            return cls(value)
+        else:
+            # if int(value) == 0x7ffff7a05360:
+            #     log.info("rejected: %r, %s, %r, %s", value, value, value.type, value.type)
+            return None
+gdb.current_objfile().pretty_printers.append(MpyObjPrinter.lookup)
+log.info("Registered pretty printer: %s", MpyObjPrinter.__name__)
+
+
+
+class MpyMapPrinter(gdb.ValuePrinter):
+    def __init__(self, value):
+        self.__value = value
+
+    def to_string(self):
+        try:
+            typename = str(self.__value.type)
+            q = "Q" if self.__value['all_keys_are_qstrs'] else "q"
+            f = "F" if self.__value['is_fixed'] else "f"
+            o = "O" if self.__value['is_ordered'] else "o"
+            used = int(self.__value['used'])
+            alloc = int(self.__value['alloc'])
+            return f"{typename} {q}{f}{o} {used} of {alloc}"
+        except Exception as e:
+            log.exception("%r", e, exc_info=True, stack_info=True)
+            raise e
+
+    def display_hint(self):
+        # return None
+        # return 'array'
+        return 'map'
+    
+    def children(self):
+        try:
+            n = 0
+            for i in range(self.__value['alloc']):
+                if mp_map_slot_is_filled(self.__value, i):
+                    elem = self.__value['table'][i]
+                    yield (f"[{n}]", elem['key'])
+                    yield (f"[{n+1}]", elem['value'])
+                    n += 2
+        except Exception as e:
+            log.exception("%r", e, exc_info=True, stack_info=True)
+            raise e
+
+    def num_children(self):
+        return self.__value['used'] * 2
+    
+    # def child(self, i):
+    #     elem = self.__value['table'][i]
+    #     return (elem['key'], elem['value'])
+    
+    @classmethod
+    def lookup(cls, value):
+        # log.info("lookup: %r, %r, %r", value, value.type, value.address)
+        if str(value.type) in {"mp_map_t", "mp_map_t *"}:
+            return cls(value)
+        else:
+            return None
+gdb.current_objfile().pretty_printers.append(MpyMapPrinter.lookup)
+log.info("Registered pretty printer: %s", MpyMapPrinter.__name__)
+
+
+def get_pydis(bc):
+    sig = MPY_BC_Sig()
+    sig.load(bc, 0)
+    sig.print()
+    mpy_disassemble(bc, sig.end, None)
+
+class MpyDis(gdb.Command):
+    """Dissasemble MicroPython bytecode.
+    Usage: mpy dis VALUE
+    """
+    def __init__(self):
+        super(MpyDis, self).__init__("mpy dis", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
+        log.info("Registered command: mpy dis")
+
+    def invoke(self, args, from_tty):
+        value = gdb.parse_and_eval(args)
+        objtype = value.cast(mptypes.mp_obj_base)["type"]
+        if int(objtype) == int(mptypes.mp_type_fun_bc):
+            get_pydis(value.cast(mptypes.mp_obj_fun_bc))
+
+if has_mpy_tool:
+    MpyDis()
+
+
+def mpy_disassemble(fun_bc, ptr, current_ptr):
+    Opcode = mpy_tool.Opcode
+
+    bc = fun_bc["bytecode"]
+    qstr_table = fun_bc["context"]["constants"]["qstr_table"]
+    obj_table = fun_bc["context"]["constants"]["obj_table"]
+    biggest_jump = 0
+    instructions = []
+    offsets = []
+    labels = dict()
+    ip = ptr
+    while True:
+        offsets.append(ptr)
+        op = int(bc[ip])
+        fmt, sz, arg, _ = mpy_tool.mp_opcode_decode(bc, ip)
+        if (bc[ip] & 0xf0) == Opcode.MP_BC_BASE_JUMP_E:
+            biggest_jump = max(biggest_jump, ip + arg)
+        if bc[ip] == Opcode.MP_BC_LOAD_CONST_OBJ:
+            arg = get_pyobj_str(obj_table[arg])
+            pass
+        if fmt == mpy_tool.MP_BC_FORMAT_QSTR:
+            arg = get_qstr(int(qstr_table[arg]))
+        elif fmt in (mpy_tool.MP_BC_FORMAT_VAR_UINT, mpy_tool.MP_BC_FORMAT_OFFSET):
+            pass
+        else:
+            arg = ""
+        print(
+            "  %04x %s %s" % (ip - ptr, Opcode.mapping[bc[ip]], arg)
+        )
+        if bc[ip] == Opcode.MP_BC_RETURN_VALUE:
+            if biggest_jump < ip:
+                break
+        ip += sz
+        #self.disassemble_children()
+
+# bytecode layout:
+#
+#  func signature  : var uint
+#      contains six values interleaved bit-wise as: xSSSSEAA [xFSSKAED repeated]
+#          x = extension           another byte follows
+#          S = n_state - 1         number of entries in Python value stack
+#          E = n_exc_stack         number of entries in exception stack
+#          F = scope_flags         four bits of flags, MP_SCOPE_FLAG_xxx
+#          A = n_pos_args          number of arguments this function takes
+#          K = n_kwonly_args       number of keyword-only arguments this function takes
+#          D = n_def_pos_args      number of default positional arguments
+#
+#  prelude size    : var uint
+#      contains two values interleaved bit-wise as: xIIIIIIC repeated
+#          x = extension           another byte follows
+#          I = n_info              number of bytes in source info section (always > 0)
+#          C = n_cells             number of bytes/cells in closure section
+#
+#  source info section:
+#      simple_name : var qstr      always exists
+#      argname0    : var qstr
+#      ...         : var qstr
+#      argnameN    : var qstr      N = num_pos_args + num_kwonly_args - 1
+#      <line number info>
+#
+#  closure section:
+#      local_num0  : byte
+#      ...         : byte
+#      local_numN  : byte          N = n_cells-1
+#
+#  <bytecode>                   // bytecode layout:
+class MPY_BC_Sig:
+    def __init__(self):
+        pass
+
+    def load(self, fun_bc, ip):
+        bytecode = fun_bc["bytecode"]
+        qstr_table = fun_bc["context"]["constants"]["qstr_table"]
+        sig = mpy_tool.extract_prelude(bytecode, ip)
+        (self.S, self.E, self.F, self.A, self.K, self.D) = sig[5]
+        (self.I, self.C) = sig[6]
+        self.end = sig[4]
+        self.lines = []
+        print(qstr_table[0])
+        self.function_name = MpyQstr.get_qstr(int(qstr_table[sig[7][0]]))
+        self.args = [get_qstr(qstr_table[int(i)]) for i in sig[7][1:]]
+        self.source = get_qstr(qstr_table[0])
+            
+        #now 1 qstr function name
+        #now A + K strings, args
+        source_line = 1
+        ptr = sig[2]
+        while ptr < sig[3]:
+            c = int(bytecode[ptr])
+            b = 0
+            l = 0
+            if (c & 0x80) == 0:
+                # 0b0LLBBBBB encoding
+                b = c & 0x1f
+                l = c >> 5
+                ptr += 1
+            else:
+                # 0b1LLLBBBB 0bLLLLLLLL encoding (l's LSB in second byte)
+                b = c & 0xf
+                l = ((c << 4) & 0x700) | int(bytecode[ptr + 1])
+                ptr += 2
+            self.lines.append((l,b))
+
+    def set_val(self, S, E, F, A, K, D, C, I):
+        self.S = S
+        self.E = E
+        self.F = F
+        self.A = A
+        self.K = K
+        self.D = D
+        self.C = C
+        self.I = I
+
+    def map_line(self, ip):
+        line = 1
+        for (l, b) in self.lines:
+            if b > ip:
+                break
+            line += l
+            ip -= b
+        return line
+
+    def print(self):
+        print("state: " + str(self.S) + ", exc: " + str(self.E) + ", scope: " + str(self.F) + ", pos_args: " + str(self.A) + ", kwonly_args: " + str(self.K) + ", def_args: " + str(self.D) + ", info: " + str(self.I) + ", cells: " + str(self.C))
+
 
 class InlinedFrameDecorator(gdb.FrameDecorator.FrameDecorator):
 
@@ -1248,7 +1382,10 @@ def add_stack_blocks(edges:pydot.Graph, nodes:pydot.Graph, mem_state, thread_sta
             frame_nodes.add_node(node)
 
 def all_pthreads():
-    thread = gdb.lookup_symbol("thread")[0].value()
+    try:
+        thread = gdb.lookup_symbol("thread")[0].value()
+    except AttributeError:
+        return
     while int(thread) != 0:
         yield thread[0]
         thread = thread[0]['next']
