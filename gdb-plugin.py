@@ -1,11 +1,11 @@
 from __future__ import annotations
-import logging, sys, os, importlib, enum, functools
+import logging, sys, os, importlib, enum, functools, re
 logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler(sys.stdout)])
 log = logging.getLogger("gdb.micropython")
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    sys.path.append('/usr/share/gdb/python/')
+    sys.path.append('/usr/local/share/gdb/python')
     import gdb
 
 try:
@@ -134,6 +134,130 @@ class MpyObj(gdb.Command):
     def invoke(self, args, from_tty):
         print(get_pyobj_str(gdb.parse_and_eval(args)))
 MpyObj()
+
+def mp_obj_is_small_int(o):
+    return gdb.parse_and_eval(f"MP_OBJ_IS_SMALL_INT({int(o)})")
+def mp_obj_small_int_value(o):
+    return gdb.parse_and_eval(f"MP_OBJ_SMALL_INT_VALUE({int(o)})")
+def mp_obj_is_qstr(o):
+    return gdb.parse_and_eval(f"MP_OBJ_IS_QSTR({int(o)})")
+def mp_obj_qstr_value(o):
+    return gdb.parse_and_eval(f"MP_OBJ_QSTR_VALUE({int(o)})")
+def mp_obj_is_immediate_obj(o):
+    return gdb.parse_and_eval(f"MP_OBJ_IS_IMMEDIATE_OBJ({int(o)})")
+def mp_obj_immediate_obj_value(o):
+    return gdb.parse_and_eval(f"MP_OBJ_IMMEDIATE_OBJ_VALUE({int(o)})")
+def mp_obj_is_obj(o):
+    return gdb.parse_and_eval(f"MP_OBJ_IS_OBJ({int(o)})")
+
+def mp_obj_null():
+    return gdb.parse_and_eval("MP_OBJ_NULL")
+def mp_obj_stop_iteration():
+    return gdb.parse_and_eval("MP_OBJ_STOP_ITERATION")
+def mp_obj_sentinel():
+    return gdb.parse_and_eval("MP_OBJ_SENTINEL")
+
+def mp_map_slot_is_filled(map: gdb.Value, pos: int):
+    return map['table'][pos]['key'] not in { mp_obj_null(), mp_obj_sentinel() }
+
+class MpyImmObjPrinter(gdb.ValuePrinter):
+    def __init__(self, value):
+        self.__value = value
+
+    def to_string(self):
+        try:
+            if mp_obj_is_small_int(self.__value):
+                return mp_obj_small_int_value(self.__value)#.cast(gdb.lookup_type("mp_int_t"))
+            # return "imm_obj"
+            elif mp_obj_is_qstr(self.__value):
+                return get_qstr(mp_obj_qstr_value(self.__value))
+            elif mp_obj_is_immediate_obj(self.__value):
+                n = mp_obj_immediate_obj_value(self.__value)
+                return f"imm({n})"
+            elif mp_obj_is_obj(self.__value):
+                return "object" # TODO children!
+            else:
+                return f"unknown({int(self.__value)})"
+        except Exception as e:
+            log.exception("%r", e, exc_info=True, stack_info=True)
+            raise e
+        
+    def display_hint(self):
+        try:
+            if mp_obj_is_small_int(self.__value):
+                return None
+            # return "string"
+            elif mp_obj_is_qstr(self.__value):
+                return "string"
+            elif mp_obj_is_immediate_obj(self.__value):
+                return None
+            elif mp_obj_is_obj(self.__value):
+                return None
+            else:
+                return None
+        except Exception as e:
+            log.exception("%r", e, exc_info=True, stack_info=True)
+            raise e
+    
+    @classmethod
+    def lookup(cls, value):
+        if value.type.name in {"mp_obj_t", "mp_const_obj_t", "mp_rom_obj_t"}:
+            return cls(value)
+        else:
+            return None
+gdb.current_objfile().pretty_printers.append(MpyImmObjPrinter.lookup)
+log.info("Registered pretty printer: %s", MpyImmObjPrinter.__name__)
+
+class MpyMapPrinter(gdb.ValuePrinter):
+    def __init__(self, value):
+        self.__value = value
+
+    def to_string(self):
+        try:
+            typename = str(self.__value.type)
+            q = "Q" if self.__value['all_keys_are_qstrs'] else "q"
+            f = "F" if self.__value['is_fixed'] else "f"
+            o = "O" if self.__value['is_ordered'] else "o"
+            used = int(self.__value['used'])
+            alloc = int(self.__value['alloc'])
+            return f"{typename} <{q}{f}{o}> {used} of {alloc}"
+        except Exception as e:
+            log.exception("%r", e, exc_info=True, stack_info=True)
+            raise e
+
+    def display_hint(self):
+        return 'map'
+    
+    def children(self):
+        try:
+            n = 0
+            for i in range(self.__value['alloc']):
+                if mp_map_slot_is_filled(self.__value, i):
+                    elem = self.__value['table'][i]
+                    yield (f"[{n}]", elem['key'])
+                    yield (f"[{n+1}]", elem['value'])
+                    n += 2
+        except Exception as e:
+            log.exception("%r", e, exc_info=True, stack_info=True)
+            raise e
+
+    def num_children(self):
+        return self.__value['used'] * 2
+    
+    # def child(self, i):
+    #     elem = self.__value['table'][i]
+    #     return (elem['key'], elem['value'])
+    
+    @classmethod
+    def lookup(cls, value):
+        # log.info("lookup: %r, %r, %r", value, value.type, value.address)
+        if str(value.type) in {"mp_map_t", "mp_map_t *"}:
+            return cls(value)
+        else:
+            return None
+gdb.current_objfile().pretty_printers.append(MpyMapPrinter.lookup)
+log.info("Registered pretty printer: %s", MpyMapPrinter.__name__)
+
 
 
 def get_pydis(bc):
