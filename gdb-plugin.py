@@ -429,6 +429,13 @@ def mp_obj_stop_iteration():
 def mp_obj_sentinel():
     return gdb.parse_and_eval("MP_OBJ_SENTINEL")
 
+def mp_rom_none():
+    return gdb.parse_and_eval("MP_ROM_NONE")
+def mp_rom_false():
+    return gdb.parse_and_eval("MP_ROM_FALSE")
+def mp_rom_true():
+    return gdb.parse_and_eval("MP_ROM_TRUE")
+
 def mp_is_instance_type(o):
     return (o['base']['type']['flags'] & gdb.parse_and_eval("MP_TYPE_FLAG_INSTANCE_TYPE")) != 0
 
@@ -469,6 +476,12 @@ class MpyObjPrinter(gdb.ValuePrinter):
                 return "stop_iteration"
             elif self.__value == mp_obj_sentinel():
                 return "sentinel"
+            elif self.__value == mp_rom_none():
+                return "None"
+            elif self.__value == mp_rom_false():
+                return "False"
+            elif self.__value == mp_rom_true():
+                return "True"
             elif mp_obj_is_small_int(self.__value):
                 return mp_obj_small_int_value(self.__value)
             elif mp_obj_is_qstr(self.__value):
@@ -504,7 +517,6 @@ class MpyObjPrinter(gdb.ValuePrinter):
                         log.info("type_obj: %s, %r", type_obj, type_obj)
                         log.info("struct_name: %s, %r", struct_name, struct_name)
                         log.info("struct_type: %s, %r", struct_type, struct_type)
-                        log.info("presenting as decoded (struct_type)")
                     
                         obj = obj.cast(struct_type)
                         break
@@ -520,6 +532,10 @@ class MpyObjPrinter(gdb.ValuePrinter):
     def children(self):
         try:
             obj = self.to_string()
+
+            if isinstance(obj, str):
+                return
+            
             try:
                 obj['base']
             except gdb.error:
@@ -570,36 +586,74 @@ class MpyObjBasePrinter(gdb.ValuePrinter):
         else:
             return None
 gdb.current_objfile().pretty_printers.append(MpyObjBasePrinter.lookup)
-log.info("Registered pretty printer: %s", MpyObjPrinter.__name__)
+log.info("Registered pretty printer: %s", MpyObjBasePrinter.__name__)
 
 
 class MpyMapPrinter(gdb.ValuePrinter):
     def __init__(self, value):
         self.__value = value
-    
+        
     def children(self):
         try:
-            yield ("all_keys_are_qstrs", self.__value['all_keys_are_qstrs'])
-            yield ("is_fixed", self.__value['is_fixed'])
-            yield ("is_ordered", self.__value['is_ordered'])
-            yield ("used", self.__value['used'])
-            yield ("alloc", self.__value['alloc'])
-            for i in range(self.__value['alloc']):
-                if mp_map_slot_is_filled(self.__value, i):
-                    elem = self.__value['table'][i]
-                    yield(f"[{elem['key']}]", elem['value'])
+            obj = self.__value
+            yield ("all_keys_are_qstrs", obj['all_keys_are_qstrs'])
+            yield ("is_fixed", obj['is_fixed'])
+            yield ("is_ordered", obj['is_ordered'])
+            yield ("used", obj['used'])
+            yield ("alloc", obj['alloc'])
+            yield ("table", obj.cast(gdb.lookup_type("mp_map_debug_t")))
         except Exception as e:
             log.exception("%r", e, exc_info=True, stack_info=True)
             raise e
-    
     @classmethod
     def lookup(cls, value):
-        if str(value.type) in {"mp_map_t", "mp_map_t *"}:
+        if str(value.type) in {"mp_map_t"}:
             return cls(value)
         else:
             return None
 gdb.current_objfile().pretty_printers.append(MpyMapPrinter.lookup)
 log.info("Registered pretty printer: %s", MpyMapPrinter.__name__)
+
+
+class MpyMapTablePrinter(gdb.ValuePrinter):
+    def __init__(self, value):
+        self.__value = value
+    
+    def to_string(self):
+        try:
+            obj = self.__value.cast(gdb.lookup_type("mp_map_t"))
+            return obj['table']
+        except Exception as e:
+            log.exception("%r", e, exc_info=True, stack_info=True)
+            raise e
+        
+    def children(self):
+        try:
+            obj = self.__value.cast(gdb.lookup_type("mp_map_t"))
+            n = 0
+            for i in range(obj['alloc']):
+                if mp_map_slot_is_filled(obj, i):
+                    elem = obj['table'][i]
+                    # yield(f"[{elem['key']}]", elem['value'])
+                    # yield(f"[{str(elem['key'])}]", elem['value'])
+                    yield (f"[{n}]", elem['key'])
+                    yield (f"[{n+1}]", elem['value'])
+                    n += 2
+        except Exception as e:
+            log.exception("%r", e, exc_info=True, stack_info=True)
+            raise e
+        
+    def display_hint(self):
+        return 'map'
+    
+    @classmethod
+    def lookup(cls, value):
+        if str(value.type) in {"mp_map_debug_t"}:
+            return cls(value)
+        else:
+            return None
+gdb.current_objfile().pretty_printers.append(MpyMapTablePrinter.lookup)
+log.info("Registered pretty printer: %s", MpyMapTablePrinter.__name__)
 
 
 def get_pydis(bc):
