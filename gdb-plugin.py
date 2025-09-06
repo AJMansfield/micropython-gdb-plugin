@@ -35,20 +35,14 @@ except ImportError:
 
 
 try:
-    import mpgdb as mp
+    import mpgdb
+    from mpgdb import mp
 except Exception as e:
     log.exception("%r", e, exc_info=True, stack_info=True)
     raise e
 
 log.info("Loaded mpgdb")
 
-
-class Mpy(gdb.Command):
-    """Examine MicroPython interpreter state."""
-    def __init__(self):
-        super(Mpy, self).__init__("mpy", gdb.COMMAND_USER, gdb.COMPLETE_COMMAND, True)
-        log.info("Registered group: mpy")
-Mpy()
 
 def get_pystate(frame):
     try:

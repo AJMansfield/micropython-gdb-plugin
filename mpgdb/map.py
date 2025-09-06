@@ -1,7 +1,7 @@
 import gdb
 import logging
 from . import file
-from . import macro
+from . import mp
 
 log = logging.getLogger("mpgdb.map")
 
@@ -11,9 +11,6 @@ map_typedef = file.micropython.lookup_static_symbol("mp_map_t", gdb.SYMBOL_TYPE_
 map_elem = file.micropython.lookup_static_symbol("mp_map_elem_t",  gdb.SYMBOL_TYPE_DOMAIN).type
 # map_elem = file.micropython.lookup_static_symbol("mp_map_elem_t",  gdb.SYMBOL_TYPE_DOMAIN).type
 map_elem_dcp = map_elem.pointer().const().pointer().const()
-
-def slot_is_filled(map: gdb.Value, pos: int):
-    return int(map['table'][pos]['key']) not in { macro.OBJ_NULL, macro.OBJ_SENTINEL }
 
 class MapPrinter(gdb.ValuePrinter):
     def __init__(self, value):
@@ -28,7 +25,8 @@ class MapPrinter(gdb.ValuePrinter):
             yield ("is_ordered", obj['is_ordered'])
             yield ("used", obj['used'])
             yield ("alloc", obj['alloc'])
-            yield ("table", obj['table'].const_value().address.const_value())
+            array_type = map_elem.vector(obj['alloc'] - 1).pointer()
+            yield ("table", obj['table'].cast(array_type))
         except Exception as e:
             log.exception("%r", e, exc_info=True, stack_info=True)
             raise e
@@ -38,13 +36,34 @@ class MapPrinter(gdb.ValuePrinter):
         if value.type == map_typedef:
             return cls(value)
 
-class TablePrinter(gdb.ValuePrinter):
-    def __init__(self, value):
+class MapTablePrinter(gdb.ValuePrinter):
+    class EntriesParameter(gdb.Parameter):
+        """Configure which mp_map_entry_t slots to show.
+        filled = Show only filled map slots.
+        all = Show all slots, including [sentinel] and [null].
+        """
+        FILLED = "filled"
+        ALL = "all"
+        ENUM = [FILLED, ALL]
+        def __init__ (self, name:str):
+            self.set_doc = "Configure which mp_map_entry_t slots to show."
+            super().__init__(name, gdb.COMMAND_DATA, gdb.PARAM_ENUM, self.ENUM)
+            log.info("Registered parameter: %s", name)
+
+        def should_show(self, entry:gdb.Value):
+            if self.value == self.FILLED:
+                return entry['key'] not in [ mp.macro.MP_OBJ_NULL, mp.macro.MP_OBJ_SENTINEL ]
+            elif self.value == self.ALL:
+                return True
+            
+    entries = EntriesParameter("mpy map_entries")
+
+    def __init__(self, value: gdb.Value):
         self.__value = value
     
     def to_string(self):
         try:
-            return self.__value['table']
+            return self.__value.address.cast(void.pointer())
         except Exception as e:
             log.exception("%r", e, exc_info=True, stack_info=True)
             raise e
@@ -52,14 +71,14 @@ class TablePrinter(gdb.ValuePrinter):
     def children(self):
         try:
             obj = self.__value
-            n = 0
-            for i in range(obj['alloc']):
-                elem = obj['table'][i]
-                if slot_is_filled(obj, i):
-                    elem = obj['table'][i]
-                    yield (f"[{n}]", elem['key'])
-                    yield (f"[{n+1}]", elem['value'])
-                    n += 2
+            size = obj.type.sizeof // obj.type.target().sizeof
+
+            for i in range(size):
+                elem = obj[i]
+                if self.entries.should_show(elem):
+                    yield (f"[{i}].key", elem['key'])
+                    yield (f"[{i}].value", elem['value'])
+            
         except Exception as e:
             log.exception("%r", e, exc_info=True, stack_info=True)
             raise e
@@ -70,18 +89,21 @@ class TablePrinter(gdb.ValuePrinter):
     @classmethod
     def lookup(cls, value: gdb.Value):
         try:
-            if value.type == map_elem_dcp:
-                value = value.cast(void.pointer())
-                value -= map_typedef['table'].bitpos//8
-                value = value.cast(map_typedef.pointer())
-                return cls(value.dereference())
+            if value.type.code == gdb.TYPE_CODE_PTR:
+                try:
+                    value = value.dereference()
+                except gdb.error: # (void *) -> Attempt to dereference a generic pointer.
+                    return
+            if value.type.code == gdb.TYPE_CODE_ARRAY:
+                elem = value.type.target().unqualified()
+                if elem == map_elem:
+                    return cls(value)
         except Exception as e:
             log.exception("%r", e, exc_info=True, stack_info=True)
             raise e
 
-
 file.micropython.pretty_printers.append(MapPrinter.lookup)
 log.info("Registered pretty printer: %s", MapPrinter.__name__)
 
-file.micropython.pretty_printers.append(TablePrinter.lookup)
-log.info("Registered pretty printer: %s", TablePrinter.__name__)
+file.micropython.pretty_printers.append(MapTablePrinter.lookup)
+log.info("Registered pretty printer: %s", MapTablePrinter.__name__)

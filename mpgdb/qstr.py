@@ -2,7 +2,7 @@ import gdb
 import logging
 from . import file
 from . import obj
-from . import macro
+from . import mp
 
 log = logging.getLogger("mpgdb.qstr")
 
@@ -12,8 +12,8 @@ qstr_short_t = file.micropython.lookup_static_symbol("qstr_short_t", gdb.SYMBOL_
 saved = None
 
 def decode_qstr(o: gdb.Value) -> int|None:
-    if obj.is_obj(o) and macro.OBJ_IS_QSTR(o):
-        return macro.OBJ_QSTR_VALUE(o)
+    if obj.is_obj(o) and mp.macro_fn.MP_OBJ_IS_QSTR(o):
+        return mp.macro_fn.MP_OBJ_QSTR_VALUE(o)
     elif o.type.name in [qstr_t.name, qstr_short_t.name]:
         return o
 
