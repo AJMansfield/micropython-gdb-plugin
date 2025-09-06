@@ -1,1 +1,1 @@
-from . import obj, struct, type, module, qstr
+from . import obj, struct, type, module, qstr, map

@@ -34,273 +34,13 @@ except ImportError:
     has_pydot = False
 
 
-class MpTypes:
-    CONSTANT_TYPES = [
-        # From obj.h
-        "mp_type_type",
-        "mp_type_object",
-        "mp_type_NoneType",
-        "mp_type_bool",
-        "mp_type_int",
-        "mp_type_str",
-        "mp_type_bytes",
-        "mp_type_bytearray",
-        "mp_type_memoryview",
-        "mp_type_float",
-        "mp_type_complex",
-        "mp_type_tuple",
-        "mp_type_list",
-        "mp_type_map",
-        "mp_type_enumerate",
-        "mp_type_filter",
-        "mp_type_deque",
-        "mp_type_dict",
-        "mp_type_ordereddict",
-        "mp_type_range",
-        "mp_type_set",
-        "mp_type_frozenset",
-        "mp_type_slice",
-        "mp_type_zip",
-        "mp_type_array",
-        "mp_type_super",
-        "mp_type_gen_wrap",
-        "mp_type_native_gen_wrap",
-        "mp_type_gen_instance",
-        "mp_type_fun_builtin_0",
-        "mp_type_fun_builtin_1",
-        "mp_type_fun_builtin_2",
-        "mp_type_fun_builtin_3",
-        "mp_type_fun_builtin_var",
-        "mp_type_fun_bc",
-        "mp_type_fun_native",
-        "mp_type_fun_viper",
-        "mp_type_fun_asm",
-        "mp_type_code",
-        "mp_type_module",
-        "mp_type_staticmethod",
-        "mp_type_classmethod",
-        "mp_type_bound_meth",
-        "mp_type_property",
-        "mp_type_stringio",
-        "mp_type_bytesio",
-        "mp_type_ringio",
-        "mp_type_reversed",
-        "mp_type_polymorph_iter",
-        "mp_type_polymorph_iter_with_finaliser",
-        "mp_type_BaseException",
-        "mp_type_ArithmeticError",
-        "mp_type_AssertionError",
-        "mp_type_AttributeError",
-        "mp_type_EOFError",
-        "mp_type_Exception",
-        "mp_type_GeneratorExit",
-        "mp_type_ImportError",
-        "mp_type_IndentationError",
-        "mp_type_IndexError",
-        "mp_type_KeyboardInterrupt",
-        "mp_type_KeyError",
-        "mp_type_LookupError",
-        "mp_type_MemoryError",
-        "mp_type_NameError",
-        "mp_type_NotImplementedError",
-        "mp_type_OSError",
-        "mp_type_OverflowError",
-        "mp_type_RuntimeError",
-        "mp_type_StopAsyncIteration",
-        "mp_type_StopIteration",
-        "mp_type_SyntaxError",
-        "mp_type_SystemExit",
-        "mp_type_TypeError",
-        "mp_type_UnicodeError",
-        "mp_type_ValueError",
-        "mp_type_ViperTypeError",
-        "mp_type_ZeroDivisionError",
+try:
+    import mpgdb as mp
+except Exception as e:
+    log.exception("%r", e, exc_info=True, stack_info=True)
+    raise e
 
-        # from whole-codebase search for MP_DEFINE_CONST_OBJ_TYPE
-        "mp_type_usb_device_builtin_default",
-        "mp_type_usb_device_builtin_none",
-        "mp_type_bluetooth_uuid",
-        "mp_type_bluetooth_ble",
-        "mp_type_framebuf",
-        "mp_type_poll",
-        "mp_type_vfs_fat_fileio",
-        "mp_type_vfs_fat_textio",
-        "mp_type_vfs_posix_fileio",
-        "mp_type_vfs_posix_textio",
-        "mp_type_vfs_posix",
-        "mp_type_vfs_rom_fileio",
-        "mp_type_vfs_rom_textio",
-        "mp_type_vfs_rom",
-        "mp_type_stest_fileio",
-        "mp_type_stest_textio2",
-        "mp_type_socket",
-        "mp_type_jsproxy_gen",
-        "mp_type_jsproxy",
-        "mp_type_undefined",
-        "mp_type_iobase",
-        "mp_type_bufwriter",
-        "mp_type_thread_lock",
-        "mp_type_array",
-        "mp_type_bytearray",
-        "mp_type_memoryview",
-        "mp_type_array_it",
-        "mp_type_attrtuple",
-        "mp_type_bound_meth",
-        "mp_type_closure",
-        "mp_type_code",
-        "mp_type_code",
-        "mp_type_complex",
-        "mp_type_deque",
-        "mp_type_dict_view_it",
-        "mp_type_dict_view",
-        "mp_type_dict",
-        "mp_type_ordereddict",
-        "mp_type_enumerate",
-        "mp_type_BaseException",
-        "mp_type_filter",
-        "mp_type_float",
-        "mp_type_fun_builtin_0",
-        "mp_type_fun_builtin_1",
-        "mp_type_fun_builtin_2",
-        "mp_type_fun_builtin_3",
-        "mp_type_fun_builtin_var",
-        "mp_type_fun_bc",
-        "mp_type_fun_native",
-        "mp_type_fun_viper",
-        "mp_type_fun_asm",
-        "mp_type_gen_wrap",
-        "mp_type_native_gen_wrap",
-        "mp_type_gen_instance",
-        "mp_type_it",
-        "mp_type_int",
-        "mp_type_list",
-        "mp_type_map",
-        "mp_type_module",
-        "mp_type_NoneType",
-        "mp_type_object",
-        "mp_type_polymorph_iter",
-        "mp_type_polymorph_iter_with_finaliser",
-        "mp_type_property",
-        "mp_type_range_it",
-        "mp_type_range",
-        "mp_type_reversed",
-        "mp_type_ringio",
-        "mp_type_set",
-        "mp_type_frozenset",
-        "mp_type_singleton",
-        "mp_type_slice",
-        "mp_type_str",
-        "mp_type_bytes",
-        "mp_type_stringio",
-        "mp_type_bytesio",
-        "mp_type_str",
-        "mp_type_tuple",
-        "mp_type_type",
-        "mp_type_super",
-        "mp_type_staticmethod",
-        "mp_type_classmethod",
-        "mp_type_zip",
-        "mp_type_frame",
-        "mp_type_checked_fun",
-    ]
-
-    MODULES = [
-        "example_user_cmodule",
-        "example_user_cmodule",
-        "mp_module_subsystem",
-        "myport_module",
-        "example_user_cmodule",
-        "cppexample_user_cmodule",
-        "example_package_user_cmodule",
-        "mp_module_asyncio",
-        "mp_module_btree",
-        "mp_module_deflate",
-        "mp_module_framebuf",
-        "mp_module_lwip",
-        "mp_module_marshal",
-        "mp_module_network",
-        "mp_module_onewire",
-        "openamp_module",
-        "mp_module_tls",
-        "mp_module_tls",
-        "mp_module_uctypes",
-        "mp_module_vfs",
-        "mp_module_webrepl",
-        "mp_module___main__",
-        "mp_module_builtins",
-        "mp_module_micropython",
-        "mp_module_builtins",
-        "mp_module_micropython",
-        "mp_module___main__",
-        "mp_module_alif",
-        "mp_module___main__",
-        "mp_module_builtins",
-        "mp_module_builtins",
-        "mp_module___main__",
-        "mp_module_network",
-        "wipy_module",
-        "esp_module",
-        "esp32_module",
-        "mp_module_espnow",
-        "esp_module",
-        "mp_module_espnow",
-        "mp_module_mimxrt",
-        "mp_module___main__",
-        "mp_module_builtins",
-        "mp_module_builtins",
-        "mp_module___main__",
-        "microbit_module",
-        "ble_module",
-        "board_module",
-        "music_module",
-        "nrf_module",
-        "mp_module_ubluepy",
-        "pyb_module",
-        "mp_module_renesas",
-        "mp_module_rp2",
-        "mp_module_samd",
-        "pyb_module",
-        "stm_module",
-        "spiflash_module",
-        "mp_module_ffi",
-        "mp_module_jni",
-        "mp_module_termios",
-        "mp_module_js",
-        "mp_module_jsffi",
-        "mp_module_zephyr",
-        "mp_module_zsensor",
-        "mp_module_builtins",
-        "mp_module_cmath",
-        "mp_module_gc",
-        "mp_module_math",
-        "mp_module_micropython",
-        "mp_module_sys",
-        "mp_module_thread",
-        "mp_module___main__",
-    ]
-
-    @functools.cache
-    def lookup(self, name):
-        if name.startswith("mp_type_"):
-            return gdb.lookup_symbol(name)[0].value().address
-        elif name.startswith("mp_obj_"):
-            return gdb.lookup_type(f"{name}_t").pointer()
-        else:
-            raise LookupError
-
-    def __getitem__(self, key:str):
-        try:
-            return self.lookup(key)
-        except (AttributeError, LookupError, gdb.error):
-            raise KeyError(f"Can't find MpType {key}")
-    
-    def __getattr__(self, name:str):
-        try:
-            return self.lookup(name)
-        except (AttributeError, LookupError, gdb.error):
-            raise AttributeError(f"Can't find MpType {name}", name=name, obj=self)
-        
-mptypes = MpTypes()
+log.info("Loaded mpgdb")
 
 
 class Mpy(gdb.Command):
@@ -309,32 +49,6 @@ class Mpy(gdb.Command):
         super(Mpy, self).__init__("mpy", gdb.COMMAND_USER, gdb.COMPLETE_COMMAND, True)
         log.info("Registered group: mpy")
 Mpy()
-
-
-def get_qstr(qstr: int) -> str:
-    return get_qstr_ref(qstr).string()
-
-def get_qstr_ref(qstr: int) -> str:
-    last_pool = gdb.lookup_symbol("mp_state_ctx")[0].value()["vm"]["last_pool"]
-    qstr_max = int(last_pool["total_prev_len"]) + int(last_pool["len"])
-    if(qstr >= qstr_max):
-        return None
-    while(qstr < int(last_pool["total_prev_len"])):
-        last_pool = last_pool["prev"]
-    return last_pool["qstrs"][qstr - int(last_pool["total_prev_len"])]
-
-class MpyQstr(gdb.Command):
-    """Decode a uniQueSTR value.
-    Usage: mpy qstr VALUE
-    """
-    def __init__(self):
-        super(MpyQstr, self).__init__("mpy qstr", gdb.COMMAND_DATA, gdb.COMPLETE_EXPRESSION)
-        log.info("Registered command: mpy qstr")
-    
-    def invoke(self, args, from_tty):
-        print(get_qstr(int(args)))
-MpyQstr()
-
 
 def get_pystate(frame):
     try:
@@ -366,23 +80,23 @@ def get_pyobj_str(value) -> str:
     if int(value) & 1:
         return str(int(value) >> 1)
     if (int(value) & 7) == 2:
-        qstr = get_qstr(int(value) >> 3)
+        qstr = mp.qstr.get(int(value) >> 3)
         if qstr:
             return "'" + qstr + "'"
     if int(value) == 0:
         return "None"
-    objtype = value.cast(mptypes.mp_obj_base)["type"]
-    if int(objtype) == int(mptypes.mp_type_dict):
-        dic = value.cast(mptypes.mp_obj_dict)
+    objtype = value.cast(mp.obj.base_t)["type"]
+    if int(objtype) == int(mp.obj.dict_t):
+        dic = value.cast(mp.obj.dict_t)
         vals = int(dic["map"]["alloc"])
         strs = ""
         for i in range(vals):
             entry = dic["map"]["table"][i]
             strs += get_pyobj_str(entry["key"]) + ": " + get_pyobj_str(entry["value"]) + ",\n "
         return "dict: {" + strs + "}"
-    if int(objtype) == int(mptypes.mp_type_module) and False:
+    if int(objtype) == int(mp.type.module) and False:
         print("module")
-        dic = value.cast(mptypes.mp_obj_module)
+        dic = value.cast(mp.obj.module_t)
         print(dic)
         return "module(" + get_pyobj_str(dic["globals"]) + ")"
     obj = str(objtype).split(" ")
@@ -407,253 +121,7 @@ class MpyObj(gdb.Command):
         print(get_pyobj_str(gdb.parse_and_eval(args)))
 MpyObj()
 
-def mp_obj_is_small_int(o):
-    return gdb.parse_and_eval(f"MP_OBJ_IS_SMALL_INT({int(o)})")
-def mp_obj_small_int_value(o):
-    return gdb.parse_and_eval(f"MP_OBJ_SMALL_INT_VALUE({int(o)})")
-def mp_obj_is_qstr(o):
-    return gdb.parse_and_eval(f"MP_OBJ_IS_QSTR({int(o)})")
-def mp_obj_qstr_value(o):
-    return gdb.parse_and_eval(f"MP_OBJ_QSTR_VALUE({int(o)})")
-def mp_obj_is_immediate_obj(o):
-    return gdb.parse_and_eval(f"MP_OBJ_IS_IMMEDIATE_OBJ({int(o)})")
-def mp_obj_immediate_obj_value(o):
-    return gdb.parse_and_eval(f"MP_OBJ_IMMEDIATE_OBJ_VALUE({int(o)})")
-def mp_obj_is_obj(o):
-    return gdb.parse_and_eval(f"MP_OBJ_IS_OBJ({int(o)})")
 
-def mp_obj_null():
-    return gdb.parse_and_eval("MP_OBJ_NULL")
-def mp_obj_stop_iteration():
-    return gdb.parse_and_eval("MP_OBJ_STOP_ITERATION")
-def mp_obj_sentinel():
-    return gdb.parse_and_eval("MP_OBJ_SENTINEL")
-
-def mp_rom_none():
-    return gdb.parse_and_eval("MP_ROM_NONE")
-def mp_rom_false():
-    return gdb.parse_and_eval("MP_ROM_FALSE")
-def mp_rom_true():
-    return gdb.parse_and_eval("MP_ROM_TRUE")
-
-def mp_is_instance_type(o):
-    return (o['base']['type']['flags'] & gdb.parse_and_eval("MP_TYPE_FLAG_INSTANCE_TYPE")) != 0
-
-POSSIBLE_SLOTS = [
-    "make_new",
-    "print",
-    "call",
-    "unary_op",
-    "binary_op",
-    "attr",
-    "subscr",
-    "iter",
-    "buffer",
-    "protocol",
-    "parent",
-    "locals_dict",
-]
-def mp_obj_type_has_slot(t, f):
-    return gdb.parse_and_eval(f"MP_OBJ_TYPE_HAS_SLOT((mp_obj_type_t *){int(t)},{f})")
-def mp_obj_type_get_slot(t, f):
-    return gdb.parse_and_eval(f"MP_OBJ_TYPE_GET_SLOT((mp_obj_type_t *){int(t)},{f})")
-
-def mp_is_instance_type(o):
-    return (o['base']['type']['flags'] & gdb.parse_and_eval("MP_TYPE_FLAG_INSTANCE_TYPE")) != 0
-
-def mp_map_slot_is_filled(map: gdb.Value, pos: int):
-    return map['table'][pos]['key'] not in { mp_obj_null(), mp_obj_sentinel() }
-
-class MpyObjPrinter(gdb.ValuePrinter):
-    def __init__(self, value):
-        self.__value = value
-
-    def to_string(self):
-        try:
-            if self.__value == mp_obj_null():
-                return "null"
-            elif self.__value == mp_obj_stop_iteration():
-                return "stop_iteration"
-            elif self.__value == mp_obj_sentinel():
-                return "sentinel"
-            elif self.__value == mp_rom_none():
-                return "None"
-            elif self.__value == mp_rom_false():
-                return "False"
-            elif self.__value == mp_rom_true():
-                return "True"
-            elif mp_obj_is_small_int(self.__value):
-                return mp_obj_small_int_value(self.__value)
-            elif mp_obj_is_qstr(self.__value):
-                return get_qstr_ref(mp_obj_qstr_value(self.__value))
-            elif mp_obj_is_immediate_obj(self.__value):
-                n = mp_obj_immediate_obj_value(self.__value)
-                return f"imm({n})"
-            elif mp_obj_is_obj(self.__value):
-                obj = self.__value.cast(mptypes.mp_obj_object)
-                log.info("obj: %s, %r", obj, obj)
-
-                if mp_is_instance_type(obj):
-                    obj = obj.cast(mptypes.mp_obj_instance)
-
-                obj_type = obj['base']['type']
-                log.info("obj_type: %s, %r", obj_type, obj_type)
-                # convert from mp_type_X mp_obj_X_t
-                # convert from mp_type_dict mp_obj_dict_t
-                for type_obj_name in mptypes.CONSTANT_TYPES:
-                    type_obj = getattr(mptypes, type_obj_name, None)
-                    if type_obj is None:
-                        continue
-                    struct_name = type_obj_name.replace("mp_type_", "mp_obj_")
-                    struct_type = getattr(mptypes, struct_name, None)
-                    if struct_type is None:
-                        continue
-
-                    # log.info("type_obj: %s, %r", type_obj, type_obj)
-                    
-                    if int(type_obj) == int(obj_type):
-                        
-                        log.info("type_obj_name: %s, %r", type_obj_name, type_obj_name)
-                        log.info("type_obj: %s, %r", type_obj, type_obj)
-                        log.info("struct_name: %s, %r", struct_name, struct_name)
-                        log.info("struct_type: %s, %r", struct_type, struct_type)
-                    
-                        obj = obj.cast(struct_type)
-                        break
-                    
-                log.info("presenting as (%s)", obj.type)
-                return obj
-            else:
-                return f"unknown({int(self.__value)})"
-        except Exception as e:
-            log.exception("%r", e, exc_info=True, stack_info=True)
-            raise e
-        
-    def children(self):
-        try:
-            obj = self.to_string()
-
-            if isinstance(obj, str):
-                return
-            
-            try:
-                obj['base']
-            except gdb.error:
-                return
-
-            yield ("*", obj[0])
-        except Exception as e:
-            log.exception("%r", e, exc_info=True, stack_info=True)
-            raise e
-
-    @classmethod
-    def lookup(cls, value):
-        if value.type.name in {"mp_obj_t", "mp_const_obj_t", "mp_rom_obj_t"}:
-            return cls(value)
-        else:
-            return None
-gdb.current_objfile().pretty_printers.append(MpyObjPrinter.lookup)
-log.info("Registered pretty printer: %s", MpyObjPrinter.__name__)
-
-
-
-class MpyObjBasePrinter(gdb.ValuePrinter):
-    def __init__(self, value):
-        self.__value = value
-
-    def to_string(self):
-        try:
-            return get_qstr(self.__value['type']['name'])
-        except Exception as e:
-            log.exception("%r", e, exc_info=True, stack_info=True)
-            raise e
-    
-    def children(self):
-        try:
-            yield ("type", self.__value['type'])
-            yield ("name", get_qstr_ref(self.__value['type']['name']))
-            for slot in POSSIBLE_SLOTS:
-                if mp_obj_type_has_slot(self.__value['type'], slot):
-                    yield (slot, mp_obj_type_get_slot(self.__value['type'], slot))
-        except Exception as e:
-            log.exception("%r", e, exc_info=True, stack_info=True)
-            raise e
-
-    @classmethod
-    def lookup(cls, value):
-        if value.type.name in {"mp_obj_base_t"}:
-            return cls(value)
-        else:
-            return None
-gdb.current_objfile().pretty_printers.append(MpyObjBasePrinter.lookup)
-log.info("Registered pretty printer: %s", MpyObjBasePrinter.__name__)
-
-
-class MpyMapPrinter(gdb.ValuePrinter):
-    def __init__(self, value):
-        self.__value = value
-        
-    def children(self):
-        try:
-            obj = self.__value
-            yield ("all_keys_are_qstrs", obj['all_keys_are_qstrs'])
-            yield ("is_fixed", obj['is_fixed'])
-            yield ("is_ordered", obj['is_ordered'])
-            yield ("used", obj['used'])
-            yield ("alloc", obj['alloc'])
-            yield ("table", obj.cast(gdb.lookup_type("mp_map_debug_t")))
-        except Exception as e:
-            log.exception("%r", e, exc_info=True, stack_info=True)
-            raise e
-    @classmethod
-    def lookup(cls, value):
-        if str(value.type) in {"mp_map_t"}:
-            return cls(value)
-        else:
-            return None
-gdb.current_objfile().pretty_printers.append(MpyMapPrinter.lookup)
-log.info("Registered pretty printer: %s", MpyMapPrinter.__name__)
-
-
-class MpyMapTablePrinter(gdb.ValuePrinter):
-    def __init__(self, value):
-        self.__value = value
-    
-    def to_string(self):
-        try:
-            obj = self.__value.cast(gdb.lookup_type("mp_map_t"))
-            return obj['table']
-        except Exception as e:
-            log.exception("%r", e, exc_info=True, stack_info=True)
-            raise e
-        
-    def children(self):
-        try:
-            obj = self.__value.cast(gdb.lookup_type("mp_map_t"))
-            n = 0
-            for i in range(obj['alloc']):
-                if mp_map_slot_is_filled(obj, i):
-                    elem = obj['table'][i]
-                    # yield(f"[{elem['key']}]", elem['value'])
-                    # yield(f"[{str(elem['key'])}]", elem['value'])
-                    yield (f"[{n}]", elem['key'])
-                    yield (f"[{n+1}]", elem['value'])
-                    n += 2
-        except Exception as e:
-            log.exception("%r", e, exc_info=True, stack_info=True)
-            raise e
-        
-    def display_hint(self):
-        return 'map'
-    
-    @classmethod
-    def lookup(cls, value):
-        if str(value.type) in {"mp_map_debug_t"}:
-            return cls(value)
-        else:
-            return None
-gdb.current_objfile().pretty_printers.append(MpyMapTablePrinter.lookup)
-log.info("Registered pretty printer: %s", MpyMapTablePrinter.__name__)
 
 
 def get_pydis(bc):
@@ -672,9 +140,9 @@ class MpyDis(gdb.Command):
 
     def invoke(self, args, from_tty):
         value = gdb.parse_and_eval(args)
-        objtype = value.cast(mptypes.mp_obj_base)["type"]
-        if int(objtype) == int(mptypes.mp_type_fun_bc):
-            get_pydis(value.cast(mptypes.mp_obj_fun_bc))
+        objtype = value.cast(mp.obj.base_t)["type"]
+        if int(objtype) == int(mp.type.fun_bc):
+            get_pydis(value.cast(mp.obj.fun_bc_t))
 
 if has_mpy_tool:
     MpyDis()
@@ -701,7 +169,7 @@ def mpy_disassemble(fun_bc, ptr, current_ptr):
             arg = get_pyobj_str(obj_table[arg])
             pass
         if fmt == mpy_tool.MP_BC_FORMAT_QSTR:
-            arg = get_qstr(int(qstr_table[arg]))
+            arg = mp.qstr.get(qstr_table[arg]).string()
         elif fmt in (mpy_tool.MP_BC_FORMAT_VAR_UINT, mpy_tool.MP_BC_FORMAT_OFFSET):
             pass
         else:
@@ -759,8 +227,8 @@ class MPY_BC_Sig:
         self.end = sig[4]
         self.lines = []
         print(qstr_table[0])
-        self.function_name = MpyQstr.get_qstr(int(qstr_table[sig[7][0]]))
-        self.args = [get_qstr(qstr_table[int(i)]) for i in sig[7][1:]]
+        self.function_name = MpyQstr.mp.qstr.get(qstr_table[sig[7][0]]).string()
+        self.args = [mp.qstr.get(qstr_table[int(i)]).string() for i in sig[7][1:]]
         self.source = get_qstr(qstr_table[0])
             
         #now 1 qstr function name
@@ -1048,10 +516,10 @@ def get_heap_type(ptr) -> str|None:
     if value is not None:
         return value
     
-    objtype = ptr.cast(mptypes.mp_obj_base)["type"]
-    for typename in mptypes.CONSTANT_TYPES:
+    objtype = ptr.cast(mp.obj.base_t)["type"]
+    for typename in mp.type.NAMES:
         try:
-            mptype = mptypes[typename]
+            mptype = mp.type._lookup(typename)
         except KeyError:
             continue
         if int(objtype) == int(mptype):
